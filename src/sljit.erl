@@ -52,29 +52,6 @@
 -export([emit_return_to/3]).
 -export([emit_simd_op2/6]).
 
-%% emit_op_flags(struct sljit_compiler *compiler, sljit_s32 op,	sljit_s32 dst, sljit_sw dstw, sljit_s32 type);
-%% SLJIT_API_FUNC_ATTRIBUTE sljit_s32 sljit_emit_select(struct sljit_compiler *compiler, sljit_s32 type, sljit_s32 dst_reg, sljit_s32 src1, sljit_sw src1w, sljit_s32 src2_reg);
-%% SLJIT_API_FUNC_ATTRIBUTE sljit_s32 sljit_emit_fselect(struct sljit_compiler *compiler, sljit_s32 type, sljit_s32 dst_freg, sljit_s32 src1, sljit_sw src1w, sljit_s32 src2_freg);
-%% SLJIT_API_FUNC_ATTRIBUTE sljit_s32 sljit_emit_mem(struct sljit_compiler *compiler, sljit_s32 type, sljit_s32 reg, sljit_s32 mem, sljit_sw memw);
-%% SLJIT_API_FUNC_ATTRIBUTE sljit_s32 sljit_emit_mem_update(struct sljit_compiler *compiler, sljit_s32 type, sljit_s32 reg, sljit_s32 mem, sljit_sw memw);
-%% SLJIT_API_FUNC_ATTRIBUTE sljit_s32 sljit_emit_fmem(struct sljit_compiler *compiler, sljit_s32 type, sljit_s32 freg, sljit_s32 mem, sljit_sw memw);
-%% SLJIT_API_FUNC_ATTRIBUTE sljit_s32 sljit_emit_fmem_update(struct sljit_compiler *compiler, sljit_s32 type, sljit_s32 freg, sljit_s32 mem, sljit_sw memw);
-
-%% SIMD Operations
-%% SLJIT_API_FUNC_ATTRIBUTE sljit_s32 sljit_emit_simd_mov(struct sljit_compiler *compiler, sljit_s32 type, sljit_s32 vreg, sljit_s32 srcdst, sljit_sw srcdstw);
-%% SLJIT_API_FUNC_ATTRIBUTE sljit_s32 sljit_emit_simd_replicate(struct sljit_compiler *compiler, sljit_s32 type, sljit_s32 vreg, sljit_s32 src, sljit_sw srcw);
-%% SLJIT_API_FUNC_ATTRIBUTE sljit_s32 sljit_emit_simd_lane_mov(struct sljit_compiler *compiler, sljit_s32 type, sljit_s32 vreg, sljit_s32 lane_index, sljit_s32 srcdst, sljit_sw srcdstw);
-%% SLJIT_API_FUNC_ATTRIBUTE sljit_s32 sljit_emit_simd_lane_replicate(struct sljit_compiler *compiler, sljit_s32 type, sljit_s32 vreg, sljit_s32 src, sljit_s32 src_lane_index);
-%% SLJIT_API_FUNC_ATTRIBUTE sljit_s32 sljit_emit_simd_extend(struct sljit_compiler *compiler, sljit_s32 type, sljit_s32 vreg, sljit_s32 src, sljit_sw srcw);
-%% SLJIT_API_FUNC_ATTRIBUTE sljit_s32 sljit_emit_simd_sign(struct sljit_compiler *compiler, sljit_s32 type, sljit_s32 vreg, sljit_s32 dst, sljit_sw dstw);
-
-
-%% SLJIT_API_FUNC_ATTRIBUTE sljit_s32 sljit_emit_atomic_load(struct sljit_compiler *compiler, sljit_s32 op, sljit_s32 dst_reg, sljit_s32 mem_reg);
-%% SLJIT_API_FUNC_ATTRIBUTE sljit_s32 sljit_emit_atomic_store(struct sljit_compiler *compiler, sljit_s32 op, sljit_s32 src_reg, sljit_s32 mem_reg, sljit_s32 temp_reg);
-%% SLJIT_API_FUNC_ATTRIBUTE sljit_s32 sljit_get_local_base(struct sljit_compiler *compiler, sljit_s32 dst, sljit_sw dstw, sljit_sw offset);
-%% SLJIT_API_FUNC_ATTRIBUTE struct sljit_const* sljit_emit_const(struct sljit_compiler *compiler, sljit_s32 dst, sljit_sw dstw, sljit_sw init_value);
-%% SLJIT_API_FUNC_ATTRIBUTE struct sljit_jump* sljit_emit_mov_addr(struct sljit_compiler *compiler, sljit_s32 dst, sljit_sw dstw);
-
 -type compiler() :: reference().
 -type code() :: reference() | {Mod::atom(), Func::atom()}.
 -type label() :: reference().
@@ -85,7 +62,7 @@
 	erlang:nif_error({nif_not_loaded,module,?MODULE,line,?LINE})).
 
 init() ->
-    Nif = filename:join(code:priv_dir(sljit), "sljit_nif"),
+    Nif = filename:join(code:priv_dir(sljitter), "sljit_nif"),
     erlang:load_nif(Nif, 0).
 
 -spec create_compiler() -> compiler().
@@ -136,7 +113,7 @@ disasm(Code) ->
     Bin = get_code(Code),
     disasm:bin(x86_64, [{mode,64}], Bin).
 
--type arg_type() :: integer() | float().
+-type arg_type() :: integer() | float() | binary().
 -type ret_type() :: ok | integer() | float().
 
 -spec call_code(Code::code()) -> ret_type().
