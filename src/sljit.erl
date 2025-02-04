@@ -11,8 +11,7 @@
 -export([get_platform_name/0]).
 -export([create_compiler/0]).
 -export([generate_code/1]).
--export([register_code/3]).
--export([unregister_code/2]).
+-export([unregister_code/1]).
 -export([get_code/1]).
 -export([disasm/1]).
 -export([code_info/1, code_info/2]).
@@ -51,9 +50,11 @@
 -export([emit_return_void/1]).
 -export([emit_return_to/3]).
 -export([emit_simd_op2/6]).
+-export([get_label_addr/1]).
 
 -type compiler() :: reference().
--type code() :: reference() | {Mod::atom(), Func::atom()}.
+-type code() :: reference() | {Mod::atom(), Func::atom()} | 
+		{reference(), Func:atom()}.
 -type label() :: reference().
 -type jump() :: reference().
 -type unsigned() :: non_neg_integer().
@@ -77,17 +78,10 @@ get_platform_name() ->
 generate_code(_Compiler) ->
     ?nif_stub().
 
-
--spec register_code(code(), Mod::atom(), Func::atom()) ->
+-spec unregister_code(Mod::atom()) ->
 	  ok | {error, ealready}.
 
-register_code(_Code, _Mod, _Func) ->
-    ?nif_stub().
-
--spec unregister_code(Mod::atom(), Func::atom()) ->
-	  ok | {error, ealready}.
-
-unregister_code(_Mod, _Func) ->
+unregister_code(_Mod) ->
     ?nif_stub().
 
 
@@ -224,13 +218,15 @@ emit_fcopy(_Compiler, _OP, _FReg, _Reg) ->
 label_name(_Compiler, _Label) ->
     ok.
 
+%% Set current module name
 -spec module(compiler(), Name::atom()) -> ok.
 module(_Compiler, _Name) ->
-    ok.
+    ?nif_stub().
 
+%% Set current function name
 -spec function(compiler(), Name::atom()) -> ok.
 function(_Compiler, _Name) ->
-    ok.
+    ?nif_stub().
 
 -spec emit_label(compiler()) -> label().
 emit_label(_Compiler) ->
@@ -309,3 +305,7 @@ emit_return_to(_Compiler, _Src, _Srcw) ->
 -spec emit_simd_op2(compiler(), Type::integer(), DstVReg::integer(), Src1VReg::integer(), Src2::integer(), Src2w::integer()) -> ok.
 emit_simd_op2(_Compiler, _Type, _DstVreg, _Src1VReg, _Src2, _Src2w) -> 
     ?nif_stub().
+
+-spec get_label_addr(Label::label()) -> integer().
+get_label_addr(_Label) ->
+    ?nif_stub().    

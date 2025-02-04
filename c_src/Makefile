@@ -12,7 +12,7 @@ CFLAGS+= -I../external/sljit/sljit_src -DSLJIT_DEBUG=0 -DSLJIT_VERBOSE=1 -DSLJIT
 LDFLAGS+=-shared
 
 OBJS = $(APP)_nif.o sljitLir.o
-LIBS =
+LIBS = -lffcall
 
 all: ../priv/$(APP)_nif.so
 

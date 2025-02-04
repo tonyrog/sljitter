@@ -135,77 +135,57 @@ expand_stmts_(Stmts, Env0) ->
 	(#bic_if {line=Ln,test=Test,then=Then,'else'=undefined}, Env) ->
 	      {Label, Goto, Env1} = create_label(Env, Ln),
 	      Not = #bic_unary { line=Ln, op='!', arg=Test},
-	      Stmt = #bic_compound {
-			line = Ln,
-			code = 
-			    [#bic_if{line=Ln,test=Not,then=Goto},
-			     Then,
-			     Label
-			    ]
-		       },
-	      {Stmt, Env1};
+	      Stmts1 = [#bic_if{line=Ln,test=Not,then=Goto},
+		       Then,
+		       Label
+		      ],
+	      {Stmts1, Env1};
 
 	 (#bic_if {line=Ln,test=Test,then=Then,'else'=Else}, Env) ->
 	      {Label1, Goto1, Env1} = create_label(Env, Ln),
 	      {Label2, Goto2, Env2} = create_label(Env1, Ln),
 	      Not = #bic_unary { line=Ln, op='!', arg=Test},
-	      Stmt = #bic_compound {
-			line = Ln,
-			code = 
-			    [#bic_if{line=Ln,test=Not,then=Goto1},
-			     Then,
-			     Goto2,
-			     Label1,
-			     Else,
-			     Label2
-			    ]},
-	      {Stmt, Env2};
+	      Stmts1 = [#bic_if{line=Ln,test=Not,then=Goto1},
+		       Then,
+		       Goto2,
+		       Label1,
+		       Else,
+		       Label2
+		      ],
+	      {Stmts1, Env2};
 
 	 (#bic_while {line=Ln,test=Test,body=Body}, Env) ->
 	      {Label1, Goto1, Env1} = create_label(Env, Ln),
 	      {Label2, Goto2, Env2} = create_label(Env1, Ln),
 	      Not = #bic_unary { line=Ln, op='!', arg=Test},
-	      Stmt =#bic_compound {
-		       line = Ln,
-		       code = 
-			   [Label1,
-			    #bic_if{line=Ln,test=Not,then=Goto2},
-			    Body,
-			    Goto1,
-			    Label2
-			   ]},
-	      {Stmt, Env2};
+	      Stmts1 =
+		  [Label1,#bic_if{line=Ln,test=Not,then=Goto2}] ++
+		  body_list(Body) ++
+		  [ Goto1, Label2 ],
+	      {Stmts1, Env2};
 
 	 (#bic_do {line=Ln,test=Test,body=Body}, Env) ->
 	      {Label1, Goto1, Env1} = create_label(Env, Ln),
-	      Stmt = #bic_compound {
-			line = Ln,
-			code = 
-			    [Label1,
-			     Body,
-			     #bic_if{line=Ln,test=Test,then=Goto1}
-			    ]},
-	      {Stmt, Env1};
+	      Stmts1 = [Label1] ++
+		  body_list(Body) ++
+		  [#bic_if{line=Ln,test=Test,then=Goto1}],
+	      {Stmts1, Env1};
 
 	 (#bic_for {line=Ln,init=Init,test=Test,update=Update,body=Body},Env) ->
 	      {Label1, Goto1, Env1} = create_label(Env, Ln),
 	      {Label2, Goto2, Env2} = create_label(Env1, Ln),
-	      Stmt = #bic_compound {
-			line = Ln,
-			code = 
-			    [Init,
-			     Label1,
-			     #bic_if{line=Ln,test=Test,then=Goto2},
-			     Body,
-			     Update,
-			     Goto1,
-			     Label2
-			    ]},
-	      {Stmt,Env2};
+	      Stmts1 = [Init,Label1,#bic_if{line=Ln,test=Test,then=Goto2}] ++
+		  body_list(Body) ++
+		  [Update,Goto1,Label2],
+	      {Stmts1,Env2};
 
 	 (Stmt, Env) ->
 	      {Stmt, Env}
       end, Env0, Stmts).
+
+
+body_list(#bic_compound{code=Cs}) -> Cs;
+body_list(Stmt) -> [Stmt].
 
 %% rewrite asignment update into asignment 
 assign(Op, A = #bic_assign{line=Ln, type=T, lhs=Lhs, rhs=Rhs}) ->

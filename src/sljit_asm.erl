@@ -141,7 +141,7 @@ assemble(Filename, DstFilename) ->
 		    Compile = sljit:create_compiler(),
 		    _Sym = asm_ins_list({fd,Fd,Compile}, Instructions, #{}),
 		    if Ext =:= ".bin" ->
-			    Code = sljit:generate_code(Compile),
+			    {_,Code} = sljit:generate_code(Compile),
 			    Bin = sljit:get_code(Code),
 			    file:close(Fd),
 			    file:write_file(DstFilename1, Bin);
@@ -170,16 +170,7 @@ load(Filename) ->
 		{ok, InsList} ->
 		    Compile = sljit:create_compiler(),
 		    St = asm_ins_list(Compile, InsList, #{}),
-		    Code = sljit:generate_code(Compile),
-		    case {maps:find(module, St),maps:find(function, St)} of
-			{{ok, M}, {ok, F}} ->
-			    case sljit:register_code(Code, M, F) of
-				ok -> {{M,F},Code};
-				Error -> Error
-			    end;
-			_ ->
-			    Code
-		    end;
+		    sljit:generate_code(Compile);
 		Error ->
 		    Error
 	    end;
@@ -188,16 +179,7 @@ load(Filename) ->
 		{ok, Slo} ->
 		    Compile = sljit:create_compiler(),
 		    St = slo_ins_list(Compile, Slo, #{}),
-		    Code = sljit:generate_code(Compile),
-		    case {maps:find(module, St),maps:find(function, St)} of
-			{{ok, M}, {ok, F}} ->
-			    case sljit:register_code(Code, M, F) of
-				ok -> {{M,F},Code};
-				Error -> Error
-			    end;
-			_ ->
-			    Code
-		    end;
+		    sljit:generate_code(Compile);
 		Error ->
 		    Error
 	    end;
@@ -236,9 +218,13 @@ slo_ins(Compile, Ins, St) ->
     io:format("slo ~w\n", [Ins]),
     case Ins of
 	{?FMT_MODULE, [M]} ->  %% synthetic
-	    St#{module => list_to_atom(M)};
+	    Mod = list_to_atom(M),
+	    ok = sljit:module(Compile, Mod),
+	    St#{module => Mod};
 	{?FMT_FUNCTION, [F]} ->  %% synthetic
-	    St#{function => list_to_atom(F)};
+	    Fun = list_to_atom(F),
+	    ok = sljit:function(Compile, Fun),
+	    St#{function => Fun};
 	{?FMT_LABEL_NAME, [L]} ->  %% synthetic
 	    St#{label_name => L};
 	{?FMT_OP0,[Op]} -> 
