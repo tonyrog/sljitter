@@ -992,6 +992,7 @@ encode_ret(Ret) ->
 	    ptr    -> ?SLJIT_ARG_TYPE_P;
 	    f64    -> ?SLJIT_ARG_TYPE_F64;
 	    f32    -> ?SLJIT_ARG_TYPE_F32;
+	    term   -> ?SLJIT_ARG_TYPE_TERM; %% returned as word
 	    _ when is_integer(Ret) -> Ret
 	end,
     ?SLJIT_ARG_RETURN(R).
@@ -1012,6 +1013,7 @@ encode_arg(Arg) ->
 	ptr -> ?SLJIT_ARG_TYPE_P_R;
 	f64 -> ?SLJIT_ARG_TYPE_F64;
 	f32 -> ?SLJIT_ARG_TYPE_F32;
+	term -> ?SLJIT_ARG_TYPE_TERM_R; %% transfered as word
 	_ when is_integer(Arg) -> Arg
     end.
 

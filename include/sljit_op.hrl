@@ -114,6 +114,10 @@
 -define(SLJIT_ARG_TYPE_P_R,	(?SLJIT_ARG_TYPE_P bor ?SLJIT_ARG_TYPE_SCRATCH_REG)).
 -define(SLJIT_ARG_TYPE_F64,	4).
 -define(SLJIT_ARG_TYPE_F32,	5).
+%% erlang extension
+-define(SLJIT_ARG_TYPE_TERM,	6).
+-define(SLJIT_ARG_TYPE_TERM_R,	(?SLJIT_ARG_TYPE_TERM bor ?SLJIT_ARG_TYPE_SCRATCH_REG)).
+
 -define(SLJIT_ARG_SHIFT, 4).
 -define(SLJIT_ARG_RETURN(Type), (Type)).
 -define(SLJIT_ARG_VALUE(Type,Idx), ((Type) bsl ((Idx) * ?SLJIT_ARG_SHIFT))).

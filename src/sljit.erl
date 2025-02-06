@@ -54,7 +54,7 @@
 
 -type compiler() :: reference().
 -type code() :: reference() | {Mod::atom(), Func::atom()} | 
-		{reference(), Func:atom()}.
+		{reference(), Func::atom()}.
 -type label() :: reference().
 -type jump() :: reference().
 -type unsigned() :: non_neg_integer().
