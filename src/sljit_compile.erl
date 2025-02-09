@@ -15,13 +15,26 @@
 file(F) ->
     case bic:file(F) of
 	{ok, Ds} ->
-	    io:format("INPUT:\n~p\n", [Ds]),
-	    Ds1 = move_local_definitions(Ds),
-	    io:format("LOCALS:\n~p\n", [Ds1]),
-	    Ds2 = expand_stmts_definitions(Ds1),
-	    io:format("GRAPH:\n~p\n", [Ds2]),
+	    io:format("INPUT:\n", []),
+	    print_definitions(user, Ds),
+
+	    io:format("UNIQUE:\n", []),
+	    Ds1 = bic_unique:definitions(Ds),
+	    print_definitions(user, Ds1),
+
+	    Ds2 = move_local_definitions(Ds1),
+	    io:format("LOCALS:\n", []),
 	    print_definitions(user, Ds2),
-	    Ds2;
+
+	    Ds3 = expand_stmts_definitions(Ds2),
+	    io:format("GRAPH:\n\n", []),
+	    print_definitions(user, Ds3),
+
+	    Ds4 = expand_expr_definitions(Ds3),
+	    io:format("TRIPLETS:\n\n", []),
+	    print_definitions(user, Ds4),
+	    ok;
+
 	Error ->
 	    Error
     end.
@@ -42,9 +55,8 @@ expand_definitions(Ds) ->
 
 %% move all local variables to the top of the function
 move_local_definitions([D|Ds]) ->
-    D1 = bic_unique:definition(D),
-    D2 = move_local_definition(D1),
-    [D2 | move_local_definitions(Ds)];
+    D1 = move_local_definition(D),
+    [D1 | move_local_definitions(Ds)];
 move_local_definitions([]) ->
     [].
 
@@ -54,10 +66,7 @@ move_local_definition(D=#bic_function{body=Body}) ->
 	  fun(Decl=#bic_decl{line=L}, Acc) ->
 		  case Decl#bic_decl.value of 
 		      undefined ->
-			  %% maybe fix that we can return false
-			  %% to have the fold delete the element?
-			  %% now we may have to clean up empty statements
-			  {#bic_empty{line=L}, [Decl|Acc]};
+			  {false, [Decl|Acc]};
 		      Value ->
 			  Decl1 = Decl#bic_decl{value=undefined},
 			  ID = #bic_id{line=Decl#bic_decl.line,
@@ -68,7 +77,7 @@ move_local_definition(D=#bic_function{body=Body}) ->
 					     op = '=',
 					     lhs=ID,
 					     rhs=Value},
-			  ExprStmt = #bic_expr_stmt{expr=Expr,line=L},
+			  ExprStmt = #bic_expr_stmt{line=L,expr=Expr},
 			  {ExprStmt, [Decl1|Acc]}
 		  end;
 	     (Stmt, Acc) ->
@@ -90,15 +99,173 @@ expand_stmts_definition(D=#bic_function{body=Body}) ->
 expand_stmts_definition(D) ->
     D.
 
+
+%% move all local variables to the top of the function
+expand_expr_definitions([D|Ds]) ->
+    Env = init_env(),
+    D1 = expand_expr_definition(D, Env),
+    [D1 | expand_expr_definitions(Ds)];
+expand_expr_definitions([]) ->
+    [].
+
+
+%% expand
+%%    x = a+b+c =>
+%%    x' has common type?
+%%    x' = a+b
+%%    x = x'+c
+
+expand_expr_definition(D=#bic_function{body=Body}, Env0) ->
+    {Body1, {Locals,_Env}} = 
+	bic_transform:fold_list(
+	  fun(Decl=#bic_decl{}, {Locals,Env}) ->
+		  Env1 = Env#{ Decl#bic_decl.name => Decl#bic_decl.type },
+		  {Decl, {Locals, Env1}};
+	     (A=#bic_expr_stmt{}, EAcc) ->
+		  expand_expr_stmt(A, EAcc);
+	     (Stmt, EAcc) ->
+		  {Stmt, EAcc}
+	  end, {[], Env0}, Body),
+    D#bic_function{body=lists:reverse(Locals,Body1)};
+expand_expr_definition(D, _Env0) ->
+    D.
+
+expand_expr_stmt(E=#bic_expr_stmt{expr=Expr},EAcc0) ->
+    case Expr of
+	#bic_assign{op='=',lhs=Lhs,rhs=Rhs} ->
+	    case Rhs of
+		U = #bic_unary{arg=M} ->
+		    {X,Stmts,EAcc1} = expand_expr(M, EAcc0),
+		    U1 = U#bic_unary{arg=X},
+		    Expr1 = Expr#bic_assign{lhs=Lhs,rhs=U1},
+		    E1 = E#bic_expr_stmt{expr=Expr1},
+		    %% fixme declarations
+		    {Stmts++[E1],EAcc1};
+		B = #bic_binary{arg1=L,arg2=R} ->
+		    {Lx,Stmts1,EAcc1} = expand_expr(L, EAcc0),
+		    {Rx,Stmts2,EAcc2} = expand_expr(R, EAcc1),
+		    B1 = B#bic_binary{arg1=Lx,arg2=Rx},
+		    Expr1 = Expr#bic_assign{lhs=Lhs,rhs=B1},
+		    E1 = E#bic_expr_stmt{expr=Expr1},
+		    {(Stmts1++Stmts2)++[E1],EAcc2};
+		_ ->
+		    %% fixme expand
+		    {E, EAcc0}
+	    end;
+	_ ->
+	    {E,EAcc0}
+    end.
+
+%% create triples
+expand_expr(B=#bic_binary{line=Ln,arg1=L,arg2=R},EAcc) ->
+    {Lx,Stmts1,EAcc1} = expand_expr(L, EAcc),
+    {Rx,Stmts2,EAcc2} = expand_expr(R, EAcc1),
+    Xt = combine_type(Lx, Rx),
+    {X, EAcc3} = new_id(EAcc2, Ln, Xt),
+    A = #bic_assign{op='=',lhs=X,rhs=B#bic_binary{arg1=Lx,arg2=Rx}},
+    Stmt = #bic_expr_stmt{line=Ln, expr = A },
+    EAcc4 = add_decl(X, EAcc3),
+    {X,(Stmts1++Stmts2)++[Stmt], EAcc4};
+expand_expr(U=#bic_unary{line=Ln,arg=M}, EAcc) ->
+    {Mx,Stmts1,EAcc1} = expand_expr(M,EAcc),
+    Xt = combine_type(Mx),
+    {X, EAcc2} = new_id(EAcc1, Ln, Xt),
+    A = #bic_assign{op='=',lhs=X, rhs=U#bic_unary{arg=Mx}},
+    Stmt = #bic_expr_stmt{line=Ln, expr = A },
+    {X,Stmts1++[Stmt], EAcc2};
+%% fixme add calls assign et etc
+expand_expr(X, EAcc) ->
+    {X,[],EAcc}.
+
+
+add_decl(#bic_id { name = Name, type = Type }, {Local,Env}) ->
+    Decl = #bic_decl{ name = Name, type = Type},
+    {[Decl|Local], Env}.
+
+%%
+%% Combine type of Lx and Rx into X!
+%% and generate a declaraion of X
+%%
+combine_type(Lx, Rx) ->
+    Lt = case Lx of
+	     #bic_id { type = T1 } ->
+		 T1;
+	     #bic_constant { type = T1 } ->
+		 T1
+	 end,
+    Rt = case Rx of
+	     #bic_id { type = T2 } ->
+		 T2;
+	     #bic_constant { type = T2 } ->
+		 T2
+	 end,
+    word_type(Lt, Rt).
+
+combine_type(Mx) ->
+    Mt = case Mx of
+	     #bic_id { type = T1 } ->
+		 T1;
+	     #bic_constant { type = T1 } ->
+		 T1
+	 end,
+    word_type(Mt).
+
+word_type(Lt=#bic_type{ sign=Ls, size=Lz, type=L}, 
+	  Rt=#bic_type { sign=Rs, size=Rz, type= R }) ->
+    io:format("Lt = ~p\n", [Lt]),
+    io:format("Rt = ~p\n", [Rt]),
+    Type = case {L, R} of
+	       {char,char} -> int;
+	       {int,char} -> int;
+	       {char,int} -> int;
+	       {int,int} -> int;
+	       {float,float} -> float;
+	       {double,float} -> double;
+	       {float,double} -> double;
+	       {double,double} -> double;
+	       {T1,T1} -> T1
+	   end,
+    Size = if Lz =:= long_long; Rz =:= long_long -> long_long;
+	      Lz =:= short; Rz =:= short -> long;
+	      Lz =:= long; Rz =:= long -> long;
+	      Lz =:= undefined; Rz =:= undefined -> long
+	   end,
+    Sign = if Ls =:= signed; Rs =:= signed -> signed;
+	      Ls =:= unsigned; Rs =:= unsigned -> unsigned;
+	      true -> unsigned
+	   end,
+    Lt#bic_type { size = Size, type = Type, sign = Sign }.
+
+word_type(Lt=#bic_type{ type=Mt, size = Mz }) ->
+    Type = case Mt of
+	       char -> int;
+	       int -> int;
+	       float -> float;
+	       double -> double;
+	       {T1,T1} -> T1
+	   end,
+    Size = if Mz =:= long_long -> long_long;
+	      Mz =:= short -> long;
+	      Mz =:= long -> long;
+	      Mz =:= undefined -> long
+	   end,
+    Lt#bic_type { type = Type, size = Size }.
+
+
+new_id({Locals,Env}, Ln, Type) ->
+    {X, Env1} = create_var(Env, Ln, Type),
+    {X, {Locals,Env1}}.
+
 %%
 %% environment:
 %%   '#label':  next label number to use
 %%
 
 init_env() ->
-    #{ '#label' => 1 }.
+    #{ '#var' => 1, '#label' => 1 }.
 
 -define(LABEL_PREFIX, "LL").
+-define(VAR_PREFIX, "VV").
 
 create_label(Env, Ln) ->
     L = maps:get('#label', Env),
@@ -110,6 +277,12 @@ create_label(Env, Ln) ->
     %% destination
     Label = #bic_label{ line=Ln, name=Name,code=Empty },
     {Label, Goto, Env#{ '#label' => L+1 }}.
+
+create_var(Env, Ln, Type) ->
+    V = maps:get('#var', Env),
+    Name = ?VAR_PREFIX ++ integer_to_list(V),
+    ID = #bic_id{line=Ln, type=Type, name=Name},
+    {ID, Env#{ '#var' => V+1 }}.
 
 expand_stmts(Stmts) ->
     Env0 = init_env(),
@@ -135,23 +308,22 @@ expand_stmts_(Stmts, Env0) ->
 	(#bic_if {line=Ln,test=Test,then=Then,'else'=undefined}, Env) ->
 	      {Label, Goto, Env1} = create_label(Env, Ln),
 	      Not = #bic_unary { line=Ln, op='!', arg=Test},
-	      Stmts1 = [#bic_if{line=Ln,test=Not,then=Goto},
-		       Then,
-		       Label
-		      ],
+	      Stmts1 =
+		  [#bic_if{line=Ln,test=Not,then=Goto}]++
+		  body_list(Then) ++
+		  [Label],
 	      {Stmts1, Env1};
 
 	 (#bic_if {line=Ln,test=Test,then=Then,'else'=Else}, Env) ->
 	      {Label1, Goto1, Env1} = create_label(Env, Ln),
 	      {Label2, Goto2, Env2} = create_label(Env1, Ln),
 	      Not = #bic_unary { line=Ln, op='!', arg=Test},
-	      Stmts1 = [#bic_if{line=Ln,test=Not,then=Goto1},
-		       Then,
-		       Goto2,
-		       Label1,
-		       Else,
-		       Label2
-		      ],
+	      Stmts1 = [#bic_if{line=Ln,test=Not,then=Goto1}]++
+		  body_list(Then) ++
+		  [Goto2,
+		   Label1] ++
+		  body_list(Else) ++
+		  [Label2],
 	      {Stmts1, Env2};
 
 	 (#bic_while {line=Ln,test=Test,body=Body}, Env) ->

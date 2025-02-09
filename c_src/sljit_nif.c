@@ -33,11 +33,11 @@
     NIF("generate_code", 1, nif_generate_code) \
     NIF("unregister_code", 1, nif_unregister_code) \
     NIF("code_info",  2, nif_code_info)	 \
-    NIF("call_code", 1, nif_avcall_code) \
-    NIF("call_code", 2, nif_avcall_code) \
-    NIF("call_code", 3, nif_avcall_code) \
-    NIF("call_code", 4, nif_avcall_code) \
-    NIF("call_code", 5, nif_avcall_code) \
+    NIF("call", 1, nif_avcall) \
+    NIF("call", 2, nif_avcall) \
+    NIF("call", 3, nif_avcall) \
+    NIF("call", 4, nif_avcall) \
+    NIF("call", 5, nif_avcall) \
     NIF("emit_op0", 2, nif_emit_op0) \
     NIF("emit_op1", 6, nif_emit_op1) \
     NIF("emit_op2", 8, nif_emit_op2) \
@@ -760,8 +760,8 @@ typedef union code_val {
 } code_val_t;
 
 
-ERL_NIF_TERM nif_avcall_code(ErlNifEnv* env, int argc,
-			     const ERL_NIF_TERM argv[])
+ERL_NIF_TERM nif_avcall(ErlNifEnv* env, int argc,
+			const ERL_NIF_TERM argv[])
 {
     code_val_t ret;
     code_val_t arg[4];

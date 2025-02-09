@@ -15,7 +15,7 @@
 -export([get_code/1]).
 -export([disasm/1]).
 -export([code_info/1, code_info/2]).
--export([call_code/1, call_code/2, call_code/3, call_code/4, call_code/5]).
+-export([call/1, call/2, call/3, call/4, call/5]).
 -export([emit_op0/2]).
 -export([emit_op1/6]).
 -export([emit_op2/8]).
@@ -110,22 +110,22 @@ disasm(Code) ->
 -type arg_type() :: integer() | float() | binary().
 -type ret_type() :: ok | integer() | float().
 
--spec call_code(Code::code()) -> ret_type().
-call_code(_Code) ->
+-spec call(Code::code()) -> ret_type().
+call(_Code) ->
     ?nif_stub().
--spec call_code(Code::code(),A1::arg_type()) -> ret_type().
-call_code(_Code,_A1) ->
+-spec call(Code::code(),A1::arg_type()) -> ret_type().
+call(_Code,_A1) ->
     ?nif_stub().
--spec call_code(Code::code(),A1::arg_type(),A2::arg_type()) -> ret_type().
-call_code(_Code,_A1,_A2) ->
+-spec call(Code::code(),A1::arg_type(),A2::arg_type()) -> ret_type().
+call(_Code,_A1,_A2) ->
     ?nif_stub().
--spec call_code(Code::code(),A1::arg_type(),A2::arg_type(),A3::arg_type()) -> 
+-spec call(Code::code(),A1::arg_type(),A2::arg_type(),A3::arg_type()) -> 
 	  ret_type().
-call_code(_Code,_A1,_A2,_A3) ->
+call(_Code,_A1,_A2,_A3) ->
     ?nif_stub().
--spec call_code(Code::code(),A1::arg_type(),A2::arg_type(),
-		A3::arg_type(),A4::arg_type()) -> ret_type().
-call_code(_Code,_A1,_A2,_A3,_A4) ->
+-spec call(Code::code(),A1::arg_type(),A2::arg_type(),
+	   A3::arg_type(),A4::arg_type()) -> ret_type().
+call(_Code,_A1,_A2,_A3,_A4) ->
     ?nif_stub().
 
 
