@@ -31,8 +31,10 @@
 -export([emit_fset64/3]).
 -export([emit_fcopy/4]).
 -export([label_name/2]).
+-export([const_name/2]).
 -export([module/2]).
 -export([function/2]).
+-export([constant/3]).
 -export([emit_label/1]).
 -export([emit_jump/2]).
 -export([emit_call/3]).
@@ -51,12 +53,16 @@
 -export([emit_return_to/3]).
 -export([emit_simd_op2/6]).
 -export([get_label_addr/1]).
+-export([emit_const/4]).
+-export([set_constant/2]).
+-export([set_constant/3]).
 
 -type compiler() :: reference().
 -type code() :: reference() | {Mod::atom(), Func::atom()} | 
 		{reference(), Func::atom()}.
 -type label() :: reference().
 -type jump() :: reference().
+-type const() :: reference().
 -type unsigned() :: non_neg_integer().
 
 -define(nif_stub(),
@@ -218,6 +224,10 @@ emit_fcopy(_Compiler, _OP, _FReg, _Reg) ->
 label_name(_Compiler, _Label) ->
     ok.
 
+-spec const_name(compiler(), Name::term()) -> ok.
+const_name(_Compiler, _Name) ->
+    ok.
+
 %% Set current module name
 -spec module(compiler(), Name::atom()) -> ok.
 module(_Compiler, _Name) ->
@@ -226,6 +236,11 @@ module(_Compiler, _Name) ->
 %% Set current function name
 -spec function(compiler(), Name::atom()) -> ok.
 function(_Compiler, _Name) ->
+    ?nif_stub().
+
+%% create runtime constant 
+-spec constant(compiler(), Name::atom(), _Const::const()) -> ok.
+constant(_Compiler, _Name, _Const) ->
     ?nif_stub().
 
 -spec emit_label(compiler()) -> label().
@@ -309,3 +324,16 @@ emit_simd_op2(_Compiler, _Type, _DstVreg, _Src1VReg, _Src2, _Src2w) ->
 -spec get_label_addr(Label::label()) -> integer().
 get_label_addr(_Label) ->
     ?nif_stub().    
+
+-spec emit_const(compiler(), Dst::integer(), Dstw::integer(), 
+		 InitValue::integer()) -> const().
+emit_const(_Compiler, _Dst, _DstW, _InitValue) -> 
+    ?nif_stub().    
+
+set_constant({CodeorMod,Name}, NewConstant) ->
+    set_constant(CodeorMod, Name, NewConstant).
+
+-spec set_constant(CodeOrMod::code()|atom(), Name::atom(), 
+		   NewConstant::integer()) -> ok.
+set_constant(_CodeOrMod, _Name, _NewConstant) ->
+    ?nif_stub().

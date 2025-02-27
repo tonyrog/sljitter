@@ -169,7 +169,7 @@ load(Filename) ->
 	    case file:consult(Filename) of
 		{ok, InsList} ->
 		    Compile = sljit:create_compiler(),
-		    St = asm_ins_list(Compile, InsList, #{}),
+		    _St = asm_ins_list(Compile, InsList, #{}),
 		    sljit:generate_code(Compile);
 		Error ->
 		    Error
@@ -178,7 +178,7 @@ load(Filename) ->
 	    case load_slo(Filename) of
 		{ok, Slo} ->
 		    Compile = sljit:create_compiler(),
-		    St = slo_ins_list(Compile, Slo, #{}),
+		    _St = slo_ins_list(Compile, Slo, #{}),
 		    sljit:generate_code(Compile);
 		Error ->
 		    Error
@@ -321,6 +321,14 @@ slo_ins(Compile, Ins, St) ->
 	    ok = sljit:emit_simd_op2(Compile, Op,DstVReg,
 				     Src1VReg, Src2, Src2w),
 	    St;
+	{?FMT_CONST_NAME, [Name]} ->  %% synthetic
+	    St#{const_name => Name};
+	{?FMT_CONST, [Dst, Dstw, InitValue]} -> 
+	    Name = maps:get(const_name, St),
+	    Const = sljit:emit_const(Compile, Dst, Dstw, InitValue),
+	    ok = sljit:constant(Compile, Name, Const),
+	    CList = maps:get(constants, St, []),
+	    St#{ constants => [{Name, Const} | CList] };
 	{Fmt,_Args} -> throw({error, {unknown_format, Fmt}})
     end.
 
@@ -367,6 +375,7 @@ asm_ins(Compile, Instruction, St) ->
 	?FMT_SET_CONTEXT -> ins_enter(Compile, Instruction, St);
 	?FMT_RETURN -> ins_return(Compile, Instruction, St);
 	?FMT_SIMD_OP2 -> ins_simd_op2(Compile, Instruction, St);
+	?FMT_CONST -> ins_const(Compile, Instruction, St);
 	Fmt -> throw({error, {unknown_format, Fmt}})
     end.
 
@@ -614,8 +623,15 @@ ins_ijump(Compile, {ijump, Type, S}, St) ->
     ok = emit(Compile, ijump, [Type1, Src, Srcw]),
     St.
 
+ins_const(Compile, {const, Name, D, InitValue}, St) ->
+    {Dst, Dstw} = dst(D),
+    ok = emit(Compile, const_name, [Name]),
+    Const = emit(Compile, const, [Dst, Dstw, InitValue]),
+    ok = sljit:constant(Compile, Name, Const),
+    CList = maps:get(constants, St, []),
+    St#{ constants => [{Name, Const} | CList] }.
 
-ins_call(Compile, {call, Type, Ret, Args, {Mod,Fun}}, St) ->
+ins_call(Compile, {call, Type, Ret, Args, {Mod,Fun}}, _St) ->
     Type1 = encode_icall_type(Type),
     RetType = encode_ret(Ret),
     ArgTypes = RetType bor encode_args(Args),
@@ -762,9 +778,6 @@ emit_func(op2) -> emit_op2;
 emit_func(op2u) -> emit_op2u;
 emit_func(op2r) -> emit_op2r;
 emit_func(shift_into) -> emit_shift_into;
-emit_func(op2r) -> emit_op2r;
-emit_func(op2) -> emit_op2;
-emit_func(op1) -> emit_op1;
 emit_func(fop1) -> emit_fop1;
 emit_func(fop2) -> emit_fop2;
 emit_func(fop2r) -> emit_fop2r;
@@ -784,6 +797,8 @@ emit_func(return_void) -> emit_return_void;
 emit_func(return) -> emit_return;
 emit_func(simd_op2) -> emit_simd_op2;
 emit_func(label_name) -> label_name;
+emit_func(const) -> emit_const;
+emit_func(const_name) -> const_name;
 emit_func(module) -> module;
 emit_func(function) -> function.
 
@@ -831,6 +846,7 @@ fmt(Ins) ->
 	return -> ?FMT_RETURN;
 	return_void -> ?FMT_RETURN;
 	label_name -> ?FMT_LABEL_NAME;
+	const_name -> ?FMT_CONST_NAME;
 	module -> ?FMT_MODULE;
 	function -> ?FMT_FUNCTION;
 	fset32 -> ?FMT_FSET32;
@@ -838,7 +854,7 @@ fmt(Ins) ->
 	call -> ?FMT_CALL;
 	icall -> ?FMT_ICALL;
 	ijump -> ?FMT_IJUMP;
-	?SIMD_OP2_LIST
+	const -> ?FMT_CONST;
 	_ -> throw({error, {unknown_op, Ins}})
     end.
 
@@ -877,6 +893,7 @@ fmt_signature(Fmt) ->
 	?FMT_FSET64 -> "ud";
 	?FMT_FCOPY -> "uuu";
 	?FMT_LABEL_NAME -> "v";
+	?FMT_CONST_NAME -> "v";
 	?FMT_MODULE -> "s";
 	?FMT_FUNCTION -> "s";
 	?FMT_LABEL -> "";
@@ -891,7 +908,8 @@ fmt_signature(Fmt) ->
 	?FMT_MJUMP -> "uss";
 	?FMT_ICALL -> "uuui";
 	?FMT_IJUMP -> "uui";
-	?FMT_CALL -> "uu"
+	?FMT_CALL -> "uu";
+	?FMT_CONST -> "uii"
     end.
 
 

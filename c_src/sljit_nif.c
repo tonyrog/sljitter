@@ -29,6 +29,7 @@
     NIF("create_compiler",   0, nif_create_compiler) \
     NIF("module",   2, nif_module) \
     NIF("function",   2, nif_function) \
+    NIF("constant",   3, nif_constant) \
     NIF("get_platform_name", 0, nif_get_platform_name) \
     NIF("generate_code", 1, nif_generate_code) \
     NIF("unregister_code", 1, nif_unregister_code) \
@@ -69,7 +70,10 @@
     NIF("emit_return_void", 1, nif_emit_return_void) \
     NIF("emit_return_to", 3, nif_emit_return_to) \
     NIF("emit_simd_op2", 6, nif_emit_simd_op2) \
-    NIF("get_label_addr", 1, nif_get_label_addr)
+    NIF("get_label_addr", 1, nif_get_label_addr) \
+    NIF("emit_const", 4, nif_emit_const) \
+    NIF("set_constant", 3, nif_set_constant) \
+    
 
 DECL_ATOM(sljit);
 DECL_ATOM(ok);
@@ -164,6 +168,20 @@ static ErlNifResourceType* compiler_res;
 static ErlNifResourceType* code_res;
 static ErlNifResourceType* label_res;
 static ErlNifResourceType* jump_res;
+static ErlNifResourceType* const_res;
+
+typedef struct {
+    struct sljit_jump* jump;
+} jump_t;
+
+typedef struct {
+    struct sljit_label* label;
+} label_t;
+
+typedef struct {
+    struct sljit_const* constp;
+} const_t;
+
 
 typedef struct code_t {
     void* addr;                   // main code area
@@ -172,6 +190,7 @@ typedef struct code_t {
     sljit_uw code_size;
     struct module_entry_t* mod_ent;
     struct export_link_t* exp_list;  // list of links to export entries
+    struct constant_entry_t* const_list; // list of generated constants
 } code_t;
 
 // signature type void only for return value
@@ -214,19 +233,30 @@ typedef struct export_link_t
     struct export_link_t* next;
 } export_link_t;
 
+// export entry jump and calls are generate from &ent->addr !
+typedef struct constant_entry_t {
+    sljit_uw addr;       // address of the constant
+    ERL_NIF_TERM mod;    // the "module" part of the constant name
+    ERL_NIF_TERM name;   // the "constant" name
+    const_t* ccp;        // resource pointer to sljit
+    struct constant_entry_t* next;  // next export entry (all entries in module)
+} constant_entry_t;
+
 typedef struct module_entry_t {
     ERL_NIF_TERM mod;             // the "module" part of the function name
     code_t* current;              // resource pointer (kept)
     code_t* old;                  // resource pointer (kept)
+    // constant_entry_t* const_list; // list of constants
     struct module_entry_t* next;  // next module entry
 } module_entry_t;
 
 typedef struct {
     ERL_NIF_TERM mod;    
     struct sljit_compiler* compiler;
-    export_entry_t* xent;      // current export entry
-    module_entry_t* ment;      // current module entry
-    export_link_t*  exp_list;  // list of compiled functions
+    export_entry_t* xent;         // current export entry
+    module_entry_t* ment;         // current module entry
+    export_link_t*  exp_list;     // list of compiled functions
+    constant_entry_t* const_list; // constant while compiling
 } compiler_t;
 
 typedef uintptr_t word_t;
@@ -239,16 +269,6 @@ typedef struct {
     module_entry_t* mod_list;   // modules loaded
     export_entry_t* exp_list;   // exports loaded
 } nif_ctx_t;
-
-// fixme - keep track on next jump resource!
-typedef struct {
-    struct sljit_jump* jump;
-} jump_t;
-
-// fixme - keep track on next label resource!
-typedef struct {
-    struct sljit_label* label;
-} label_t;
 
 #if 0
 static int get_u32(ErlNifEnv* env, ERL_NIF_TERM term, sljit_u32* val)
@@ -389,6 +409,29 @@ static export_entry_t* lookup_export(nif_ctx_t* ctx, ERL_NIF_TERM mod, ERL_NIF_T
     return NULL;    
 }
 
+// allocate new module entry (fixme HASH) insert into nif_contxt
+static constant_entry_t* create_constant(ERL_NIF_TERM mod, ERL_NIF_TERM name)
+{
+    constant_entry_t* cent;
+    cent = enif_alloc(sizeof(constant_entry_t));
+    cent->addr = 0;
+    cent->mod = mod;
+    cent->name = name;
+    cent->next = NULL;
+    return cent;
+}
+
+static constant_entry_t* lookup_constant(compiler_t* cp, ERL_NIF_TERM name)
+{
+    constant_entry_t* cent = cp->const_list;
+    while(cent != NULL) {
+	if (cent->name == name)
+	    return cent;
+	cent = cent->next;
+    }
+    return NULL;
+}
+
 static int get_module(ErlNifEnv* env, ERL_NIF_TERM term, module_entry_t** mentp)
 {
     code_t* crp = NULL;
@@ -477,7 +520,8 @@ ERL_NIF_TERM nif_create_compiler(ErlNifEnv* env, int argc,
     cp->mod = ATOM(undefined);
     cp->ment = NULL;  // set by nif_module()
     cp->xent = NULL;  // set by nif_function()
-    cp->exp_list = NULL; 
+    cp->exp_list = NULL;
+    cp->const_list = NULL;     
     sljit_compiler_verbose(cptr, stdout);
     term = enif_make_resource(env,cp);
     enif_release_resource(cp);
@@ -535,6 +579,36 @@ ERL_NIF_TERM nif_function(ErlNifEnv* env, int argc,
 	return nif_return(env, SLJIT_ERR_ALLOC_FAILED);
     xlink->label = label;
     cp->xent = xent;        // current function
+    return ATOM(ok);
+}
+
+// Set current constant and create an export entry
+ERL_NIF_TERM nif_constant(ErlNifEnv* env, int argc,
+			  const ERL_NIF_TERM argv[])
+{
+    UNUSED(argc);
+    compiler_t* cp;
+    const_t* ccp;    
+    module_entry_t* ment;
+    constant_entry_t* cent;
+    
+    if (!enif_get_resource(env, argv[0], compiler_res, (void**)&cp))
+	return EXCP_BADARG_N(env, 0, "not a compiler");
+    if (!enif_is_atom(env, argv[1]))
+	return EXCP_BADARG_N(env, 1, "not a constant name");
+    if (!enif_get_resource(env, argv[2], const_res, (void**)&ccp))
+	return EXCP_BADARG_N(env, 2, "not a constant");        
+
+    if ((ment = cp->ment) == NULL) // this is the module entry in compiler
+    	return EXCP_BADARG_N(env, 0, "no module");
+
+    if (lookup_constant(cp, argv[1]) != NULL)
+	return EXCP_BADARG_N(env, 1, "constant already created");
+    cent = create_constant(ment->mod, argv[1]);
+    cent->next = cp->const_list;
+    cent->ccp = ccp;
+    enif_keep_resource(ccp);
+    cp->const_list = cent;
     return ATOM(ok);
 }
 
@@ -598,17 +672,21 @@ ERL_NIF_TERM nif_generate_code(ErlNifEnv* env, int argc,
     crp->exec_allocator_data = NULL;
     crp->exec_offset = sljit_get_executable_offset(cp->compiler);
     crp->code_size   = sljit_get_generated_code_size(cp->compiler);
-    crp->mod_ent = NULL;
-    crp->exp_list = NULL;
+    crp->mod_ent     = NULL;
+    crp->exp_list    = NULL;
+    crp->const_list  = NULL;
     
     export_list = enif_make_list(env, 0);    
     // are we generating a module?
     if ((ment = cp->ment) != NULL) {
 	export_link_t* xlink;
+	constant_entry_t* cent;
 
+	crp->const_list = cp->const_list;
 	crp->exp_list = cp->exp_list;
 	crp->mod_ent = ment;
 
+	cp->const_list = NULL;	
 	cp->exp_list = NULL;
 	cp->xent = NULL;
 	cp->ment = NULL;
@@ -626,6 +704,15 @@ ERL_NIF_TERM nif_generate_code(ErlNifEnv* env, int argc,
 	    xlink = xlink->next;
 	}
 	ment->current = crp;
+
+	// now scan the constant entries
+	cent = crp->const_list;
+	while(cent != NULL) {
+	    const_t* cnst = cent->ccp;
+	    sljit_uw addr = sljit_get_const_addr(cnst->constp);
+	    cent->addr = addr;
+	    cent = cent->next;
+	}
 
 	// collect all {Mod,Fun} list
 	xlink = crp->exp_list;
@@ -1645,6 +1732,73 @@ ERL_NIF_TERM nif_emit_simd_op2(ErlNifEnv* env, int argc,
     return nif_return(env, ret);
 }
 
+ERL_NIF_TERM nif_emit_const(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+    UNUSED(argc);
+    compiler_t* cp;
+    const_t* cpp;
+    sljit_s32 dst; sljit_sw dstw;
+    sljit_sw init_value;
+    ERL_NIF_TERM term;
+    
+    if (!enif_get_resource(env, argv[0], compiler_res, (void**)&cp))
+	return EXCP_BADARG_N(env, 0, "not a compiler");
+    if (!get_s32(env, argv[1], &dst))
+	return EXCP_BADARG_N(env, 1, "not an integer");
+    if (!get_sw(env, argv[2], &dstw))
+	return EXCP_BADARG_N(env, 2, "not an integer");
+    if (!get_sw(env, argv[3], &init_value))
+	return EXCP_BADARG_N(env, 3, "not an integer");
+
+    cpp = enif_alloc_resource(const_res, sizeof(const_t));    
+    cpp->constp = sljit_emit_const(cp->compiler, dst, dstw, init_value);
+    term = enif_make_resource(env,cpp);
+    enif_release_resource(cpp);
+    return term;
+}
+
+ERL_NIF_TERM nif_get_const_addr(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+    UNUSED(argc);
+    const_t* ccp;
+    sljit_uw ret;
+    
+    if (!enif_get_resource(env, argv[0], const_res, (void**)&ccp))
+	return EXCP_BADARG_N(env, 0, "not a constant");
+    ret = sljit_get_const_addr(ccp->constp);
+    return make_uw(env, ret);
+}
+
+// set_constant(Module/Code, Name, Value) 
+ERL_NIF_TERM nif_set_constant(ErlNifEnv* env, int argc,
+			      const ERL_NIF_TERM argv[])
+{
+    UNUSED(argc);
+    code_t* crp = NULL;    
+    sljit_sw new_constant;
+    constant_entry_t* cent;
+    module_entry_t* ment = NULL;    
+
+    if (get_module(env, argv[0], &ment))
+	crp = ment->current;
+    else if (enif_get_resource(env, argv[0], code_res, (void**)&crp))
+	ment = crp->mod_ent;
+    else 
+	return EXCP_BADARG_N(env, 0, "not code");    
+    if (!enif_is_atom(env, argv[1]))
+	return EXCP_BADARG_N(env, 1, "not a constant name");
+    if (!get_sw(env, argv[2], &new_constant))
+	return EXCP_BADARG_N(env, 2, "not an integer");
+    cent = crp->const_list;
+    while(cent != NULL) {
+	if (cent->name == argv[1]) {
+	    sljit_set_const(cent->addr, new_constant, crp->exec_offset);
+	    return ATOM(ok);
+	}
+	cent = cent->next;
+    }
+    return EXCP_BADARG_N(env, 1, "not a constant name");    
+}
 
 // create all tracing NIFs
 #ifdef NIF_TRACE
@@ -1740,6 +1894,14 @@ static void jump_dtor(ErlNifEnv* env, void* ptr)
     UNUSED(env);
     UNUSED(ptr);    
     DBG("jump_dtor\r\n");
+}
+
+// const is not used any more, but is reachamble through compuler struct
+static void const_dtor(ErlNifEnv* env, void* ptr)
+{
+    UNUSED(env);
+    UNUSED(ptr);    
+    DBG("const_dtor\r\n");
 }
 
 static void load_atoms(ErlNifEnv* env)
@@ -1907,6 +2069,10 @@ static int sljit_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
 				       "sljit_jump",
 				       jump_dtor,
 				       ERL_NIF_RT_CREATE, &tried);
+    const_res = enif_open_resource_type(env, 0,
+					"sljit_const",
+					const_dtor,
+					ERL_NIF_RT_CREATE, &tried);    
     code_res = enif_open_resource_type(env, 0,
 				       "sljit_code",
 				       code_dtor,
@@ -1950,6 +2116,12 @@ static int sljit_upgrade(ErlNifEnv* env, void** priv_data,
 				       ERL_NIF_RT_CREATE |
 				       ERL_NIF_RT_TAKEOVER,
 				       &tried);
+    const_res = enif_open_resource_type(env, 0,
+					"sljit_const",
+					const_dtor,
+					ERL_NIF_RT_CREATE |
+					ERL_NIF_RT_TAKEOVER,
+					&tried);        
     code_res = enif_open_resource_type(env, 0,
 				       "sljit_code",
 				       code_dtor,
