@@ -10,7 +10,7 @@
 {mov, r2, 0}.   %% r2 = s
 {mov, r3, 0}.   %% r3 = s	
 {label, again}.
-{jump, {cmp, equal, r1, 0}, done}.
+{jump, [{equal, r1, 0}], done}.
 {mov_u8, r3, {mem,r0}}.
 {add, r2, r2, r3}.
 {add, r0, r0, 1}.

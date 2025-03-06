@@ -151,6 +151,11 @@
 -define(SLJIT_SIMD_REGS_ARE_PAIRS,	13).
 -define(SLJIT_HAS_ATOMIC,		14).
 -define(SLJIT_HAS_MEMORY_BARRIER,	15).
+-define(SLJIT_HAS_AVX,			100).
+-define(SLJIT_HAS_AVX2,			101).
+-define(SLJIT_HAS_LASX,                 201).
+
+
 -define(SLJIT_ENTER_KEEP(N),		(N)).
 -define(SLJIT_ENTER_REG_ARG,		16#00000004).
 -define(SLJIT_ENTER_USE_VEX,		1600010000).

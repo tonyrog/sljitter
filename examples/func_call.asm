@@ -6,7 +6,7 @@
 
 {'and', r0, s0, 1}.
 
-{jump, {cmp, equal, r0, 0}, print_c}.
+{jump, [{equal, r0, 0}], print_c}.
 %% print b
 {mov, r0, s1}.
 {icall, [call], word, [word], 16#12345678}.

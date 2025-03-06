@@ -26,10 +26,13 @@
     atm_##name = enif_make_atom((env),string)
 
 #define NIF_LIST \
+    NIF("has_cpu_feature", 1, nif_has_cpu_feature) \
     NIF("create_compiler",   0, nif_create_compiler) \
-    NIF("module",   2, nif_module) \
+    NIF("module",     2, nif_module) \
     NIF("function",   2, nif_function) \
     NIF("constant",   3, nif_constant) \
+    NIF("label_addr", 3, nif_label_addr) \
+    NIF("jump_addr",  3, nif_jump_addr) \
     NIF("get_platform_name", 0, nif_get_platform_name) \
     NIF("generate_code", 1, nif_generate_code) \
     NIF("unregister_code", 1, nif_unregister_code) \
@@ -71,12 +74,16 @@
     NIF("emit_return_to", 3, nif_emit_return_to) \
     NIF("emit_simd_op2", 6, nif_emit_simd_op2) \
     NIF("get_label_addr", 1, nif_get_label_addr) \
-    NIF("emit_const", 4, nif_emit_const) \
+    NIF("emit_const", 5, nif_emit_const) \
     NIF("set_constant", 3, nif_set_constant) \
+    NIF("emit_mov_addr", 4, nif_emit_mov_addr) \
+    NIF("set_jump", 3, nif_set_jump)
     
 
 DECL_ATOM(sljit);
 DECL_ATOM(ok);
+DECL_ATOM(true);
+DECL_ATOM(false);
 DECL_ATOM(error);
 DECL_ATOM(notsup);
 DECL_ATOM(badarg);
@@ -96,6 +103,15 @@ DECL_ATOM(exec_offset);
 DECL_ATOM(return_type);
 DECL_ATOM(argc);
 DECL_ATOM(arg_type);
+DECL_ATOM(const_list);
+DECL_ATOM(label_list);
+DECL_ATOM(jump_list);
+DECL_ATOM(addr_list);
+DECL_ATOM(export_list);
+DECL_ATOM(const);
+DECL_ATOM(label);
+DECL_ATOM(jump);
+DECL_ATOM(addr);
 // signature types
 DECL_ATOM(void);
 DECL_ATOM(word);
@@ -115,6 +131,7 @@ DECL_ATOM(print_ln);
 DECL_ATOM(print_char);
 DECL_ATOM(print_string);
 DECL_ATOM(print_term);
+
 
 // Declare all nif functions
 #undef NIF
@@ -179,6 +196,8 @@ typedef struct {
 } label_t;
 
 typedef struct {
+    sljit_s32 op;
+    ERL_NIF_TERM def; // default label value
     struct sljit_const* constp;
 } const_t;
 
@@ -190,7 +209,7 @@ typedef struct code_t {
     sljit_uw code_size;
     struct module_entry_t* mod_ent;
     struct export_link_t* exp_list;  // list of links to export entries
-    struct constant_entry_t* const_list; // list of generated constants
+    struct addr_entry_t* addr_list;  // list of generated constants/labels and jumps
 } code_t;
 
 // signature type void only for return value
@@ -233,20 +252,34 @@ typedef struct export_link_t
     struct export_link_t* next;
 } export_link_t;
 
-// export entry jump and calls are generate from &ent->addr !
-typedef struct constant_entry_t {
+// const/label/jump
+
+typedef enum
+{
+    ADDR_NONE  = 0,
+    ADDR_ALL   = 0,    
+    ADDR_CONST = 1,
+    ADDR_LABEL = 2,
+    ADDR_JUMP  = 3
+} addr_type_t;
+    
+typedef struct addr_entry_t {
     sljit_uw addr;       // address of the constant
-    ERL_NIF_TERM mod;    // the "module" part of the constant name
-    ERL_NIF_TERM name;   // the "constant" name
-    const_t* ccp;        // resource pointer to sljit
-    struct constant_entry_t* next;  // next export entry (all entries in module)
-} constant_entry_t;
+    ERL_NIF_TERM name;   // the name of label/const/jump
+    addr_type_t type;    // types switch
+    union {
+	const_t* cnst;   // resource  
+	label_t* lbl;    // resource
+	jump_t*  jmp;    // resource
+	void*    res;    // common pointer
+    };
+    struct addr_entry_t* next;  // next export entry (all entries in module)
+} addr_entry_t;
 
 typedef struct module_entry_t {
     ERL_NIF_TERM mod;             // the "module" part of the function name
     code_t* current;              // resource pointer (kept)
     code_t* old;                  // resource pointer (kept)
-    // constant_entry_t* const_list; // list of constants
     struct module_entry_t* next;  // next module entry
 } module_entry_t;
 
@@ -256,7 +289,7 @@ typedef struct {
     export_entry_t* xent;         // current export entry
     module_entry_t* ment;         // current module entry
     export_link_t*  exp_list;     // list of compiled functions
-    constant_entry_t* const_list; // constant while compiling
+    addr_entry_t* addr_list;      // addr (const/label/jump) while compiling
 } compiler_t;
 
 typedef uintptr_t word_t;
@@ -325,6 +358,12 @@ static int get_uw(ErlNifEnv* env, ERL_NIF_TERM term, sljit_uw* val)
 static ERL_NIF_TERM make_uw(ErlNifEnv* env, sljit_uw val)
 {
     return enif_make_uint64(env, (uint64_t) val);
+}
+
+static ERL_NIF_TERM make_bool(ErlNifEnv* env, sljit_s32 val)
+{
+    UNUSED(env);
+    return val ? ATOM(true) : ATOM(false);
 }
 
 static int get_float(ErlNifEnv* env, ERL_NIF_TERM term, float* fv)
@@ -409,28 +448,46 @@ static export_entry_t* lookup_export(nif_ctx_t* ctx, ERL_NIF_TERM mod, ERL_NIF_T
     return NULL;    
 }
 
-// allocate new module entry (fixme HASH) insert into nif_contxt
-static constant_entry_t* create_constant(ERL_NIF_TERM mod, ERL_NIF_TERM name)
+static addr_entry_t* create_addr(ERL_NIF_TERM name, addr_type_t type, void* res, sljit_uw addr)
+				 
 {
-    constant_entry_t* cent;
-    cent = enif_alloc(sizeof(constant_entry_t));
-    cent->addr = 0;
-    cent->mod = mod;
-    cent->name = name;
-    cent->next = NULL;
-    return cent;
+    addr_entry_t* ap;
+    ap = enif_alloc(sizeof(addr_entry_t));
+    ap->type = type;
+    ap->addr = addr;
+    ap->res  = res;
+    ap->name = name;
+    ap->next = NULL;
+    if (res != NULL)
+	enif_keep_resource(res);
+    return ap;
 }
 
-static constant_entry_t* lookup_constant(compiler_t* cp, ERL_NIF_TERM name)
+// find address by name and type
+static addr_entry_t* lookup_addr(addr_entry_t* list, ERL_NIF_TERM name, addr_type_t type)
 {
-    constant_entry_t* cent = cp->const_list;
-    while(cent != NULL) {
-	if (cent->name == name)
-	    return cent;
-	cent = cent->next;
+    addr_entry_t* ap = list;
+    while (ap != NULL) {
+	if ((ap->name == name) && (ap->type == type))
+	    return ap;
+	ap = ap->next;
     }
     return NULL;
 }
+
+static addr_entry_t* add_addr(addr_entry_t** listp, ERL_NIF_TERM name,
+			      addr_type_t type, void* res, sljit_uw addr)
+				 
+{
+    addr_entry_t* ap;    
+    if (lookup_addr(*listp, name, type) != NULL)
+	return NULL;
+    ap = create_addr(name, type, res, addr);
+    ap->next = *listp;
+    *listp = ap;
+    return ap;
+}
+
 
 static int get_module(ErlNifEnv* env, ERL_NIF_TERM term, module_entry_t** mentp)
 {
@@ -504,6 +561,20 @@ ERL_NIF_TERM nif_return(ErlNifEnv* env, int err)
     }
 }
 
+
+ERL_NIF_TERM nif_has_cpu_feature(ErlNifEnv* env, int argc,
+				 const ERL_NIF_TERM argv[])
+{
+    UNUSED(argc);
+    UNUSED(argv);
+    sljit_s32 feature_type;
+    
+    if (!get_s32(env, argv[0], &feature_type))
+	return EXCP_BADARG_N(env, 0, "not an integer");
+    return make_bool(env, sljit_has_cpu_feature(feature_type));
+}
+
+
 ERL_NIF_TERM nif_create_compiler(ErlNifEnv* env, int argc,
 				 const ERL_NIF_TERM argv[])
 {
@@ -521,7 +592,7 @@ ERL_NIF_TERM nif_create_compiler(ErlNifEnv* env, int argc,
     cp->ment = NULL;  // set by nif_module()
     cp->xent = NULL;  // set by nif_function()
     cp->exp_list = NULL;
-    cp->const_list = NULL;     
+    cp->addr_list = NULL;
     sljit_compiler_verbose(cptr, stdout);
     term = enif_make_resource(env,cp);
     enif_release_resource(cp);
@@ -582,33 +653,63 @@ ERL_NIF_TERM nif_function(ErlNifEnv* env, int argc,
     return ATOM(ok);
 }
 
-// Set current constant and create an export entry
+// Set current constant and create address entry
 ERL_NIF_TERM nif_constant(ErlNifEnv* env, int argc,
 			  const ERL_NIF_TERM argv[])
 {
     UNUSED(argc);
     compiler_t* cp;
     const_t* ccp;    
-    module_entry_t* ment;
-    constant_entry_t* cent;
     
     if (!enif_get_resource(env, argv[0], compiler_res, (void**)&cp))
 	return EXCP_BADARG_N(env, 0, "not a compiler");
     if (!enif_is_atom(env, argv[1]))
 	return EXCP_BADARG_N(env, 1, "not a constant name");
     if (!enif_get_resource(env, argv[2], const_res, (void**)&ccp))
-	return EXCP_BADARG_N(env, 2, "not a constant");        
+	return EXCP_BADARG_N(env, 2, "not a constant");
 
-    if ((ment = cp->ment) == NULL) // this is the module entry in compiler
-    	return EXCP_BADARG_N(env, 0, "no module");
-
-    if (lookup_constant(cp, argv[1]) != NULL)
+    if (add_addr(&cp->addr_list, argv[1], ADDR_CONST, ccp, 0) == NULL)
 	return EXCP_BADARG_N(env, 1, "constant already created");
-    cent = create_constant(ment->mod, argv[1]);
-    cent->next = cp->const_list;
-    cent->ccp = ccp;
-    enif_keep_resource(ccp);
-    cp->const_list = cent;
+    return ATOM(ok);
+}
+
+// Set current label and create address entry
+ERL_NIF_TERM nif_label_addr(ErlNifEnv* env, int argc,
+			    const ERL_NIF_TERM argv[])
+{
+    UNUSED(argc);
+    compiler_t* cp;
+    label_t* lp;
+    
+    if (!enif_get_resource(env, argv[0], compiler_res, (void**)&cp))
+	return EXCP_BADARG_N(env, 0, "not a compiler");
+    if (!enif_is_atom(env, argv[1]))
+	return EXCP_BADARG_N(env, 1, "not a label name");
+    if (!enif_get_resource(env, argv[2], label_res, (void**)&lp))
+	return EXCP_BADARG_N(env, 2, "not a label");        
+
+    if (add_addr(&cp->addr_list, argv[1], ADDR_LABEL, lp, 0) == NULL)
+	return EXCP_BADARG_N(env, 1, "label already created");
+    return ATOM(ok);
+}
+
+// Set current jump and create address entry
+ERL_NIF_TERM nif_jump_addr(ErlNifEnv* env, int argc,
+			   const ERL_NIF_TERM argv[])
+{
+    UNUSED(argc);
+    compiler_t* cp;
+    jump_t* jp;
+    
+    if (!enif_get_resource(env, argv[0], compiler_res, (void**)&cp))
+	return EXCP_BADARG_N(env, 0, "not a compiler");
+    if (!enif_is_atom(env, argv[1]))
+	return EXCP_BADARG_N(env, 1, "not a jump name");
+    if (!enif_get_resource(env, argv[2], jump_res, (void**)&jp))
+	return EXCP_BADARG_N(env, 2, "not a jump");        
+
+    if (add_addr(&cp->addr_list, argv[1], ADDR_JUMP, jp, 0) == NULL)
+	return EXCP_BADARG_N(env, 1, "jump already created");    
     return ATOM(ok);
 }
 
@@ -661,12 +762,21 @@ ERL_NIF_TERM nif_generate_code(ErlNifEnv* env, int argc,
     ERL_NIF_TERM term;
     code_t* crp;
     module_entry_t* ment;
+    addr_entry_t* ap;    
     ERL_NIF_TERM export_list;
+    export_link_t* xlink;
     
     if (!enif_get_resource(env, argv[0], compiler_res, (void**)&cp))
 	return EXCP_BADARG_N(env, 0, "not a compiler");
+    
+    enif_fprintf(stdout, "start generating code\r\n");
+    
     code = sljit_generate_code(cp->compiler, 0, NULL);
+    if (code == NULL)
+	return EXCP_BADARG_N(env, 0, "unable to generate code");
+	
     crp = enif_alloc_resource(code_res, sizeof(code_t));
+    memset(crp, 0, sizeof(code_t));
     
     crp->addr = code;
     crp->exec_allocator_data = NULL;
@@ -674,20 +784,56 @@ ERL_NIF_TERM nif_generate_code(ErlNifEnv* env, int argc,
     crp->code_size   = sljit_get_generated_code_size(cp->compiler);
     crp->mod_ent     = NULL;
     crp->exp_list    = NULL;
-    crp->const_list  = NULL;
+    crp->addr_list = cp->addr_list;
+    ment = cp->ment;
+    DBG("exec_offset = %p\r\n", crp->exec_offset);
+    DBG("code_size = %ld\r\n", crp->code_size);
     
-    export_list = enif_make_list(env, 0);    
+    cp->addr_list = NULL;
+    cp->ment = NULL;
+    
+    // scan and lookup addresses
+    ap = crp->addr_list;
+    while(ap != NULL) {
+	switch(ap->type) {
+	case ADDR_CONST:
+	    ap->addr = sljit_get_const_addr(ap->cnst->constp);
+	    DBG("addr_const: %T = %p\r\n", ap->name, ap->addr);
+	    break;
+	case ADDR_LABEL:
+	    ap->addr = sljit_get_label_addr(ap->lbl->label);
+	    DBG("addr_label: %T = %p\r\n", ap->name, ap->addr);	    
+	    break;
+	case ADDR_JUMP:
+	    ap->addr = sljit_get_jump_addr(ap->jmp->jump);
+	    DBG("addr_jump: %T = %p\r\n", ap->name, ap->addr);
+	    break;
+	default:
+	    break;
+	}
+	ap = ap->next;
+    }
+
+    // scan again and result label address values
+    ap = crp->addr_list;
+    while(ap != NULL) {
+	if ((ap->type == ADDR_CONST) && (ap->cnst->def != 0)) {
+	    addr_entry_t* bp;
+	    if ((bp = lookup_addr(crp->addr_list, ap->cnst->def, ADDR_LABEL)) != NULL) {
+		sljit_set_const(ap->addr, ap->cnst->op, bp->addr, crp->exec_offset);
+	    }
+	}
+	ap = ap->next;
+    }
+    
+    export_list = enif_make_list(env, 0);
     // are we generating a module?
-    if ((ment = cp->ment) != NULL) {
-	export_link_t* xlink;
-	constant_entry_t* cent;
-
-	crp->const_list = cp->const_list;
+    if (ment != NULL) {
 	crp->exp_list = cp->exp_list;
-	crp->mod_ent = ment;
-
-	cp->const_list = NULL;	
 	cp->exp_list = NULL;
+	
+	crp->mod_ent = ment;
+	
 	cp->xent = NULL;
 	cp->ment = NULL;
 	cp->mod = ATOM(undefined);
@@ -704,28 +850,19 @@ ERL_NIF_TERM nif_generate_code(ErlNifEnv* env, int argc,
 	    xlink = xlink->next;
 	}
 	ment->current = crp;
-
-	// now scan the constant entries
-	cent = crp->const_list;
-	while(cent != NULL) {
-	    const_t* cnst = cent->ccp;
-	    sljit_uw addr = sljit_get_const_addr(cnst->constp);
-	    cent->addr = addr;
-	    cent = cent->next;
-	}
-
-	// collect all {Mod,Fun} list
-	xlink = crp->exp_list;
-	while(xlink != NULL) {
-	    export_entry_t* xent = xlink->exp;
-	    int nargs = arg_types_argc(xent->arg_types);
-	    ERL_NIF_TERM mfa = enif_make_tuple3(env, xent->mod, xent->fun,
-						enif_make_int(env, nargs));
-	    export_list = enif_make_list_cell(env, mfa, export_list);
-	    xlink = xlink->next;
-	}
-	enif_keep_resource(crp);
     }
+
+    // collect all {Mod,Fun} list
+    xlink = crp->exp_list;
+    while(xlink != NULL) {
+	export_entry_t* xent = xlink->exp;
+	int nargs = arg_types_argc(xent->arg_types);
+	ERL_NIF_TERM mfa = enif_make_tuple3(env, xent->mod, xent->fun,
+					    enif_make_int(env, nargs));
+	export_list = enif_make_list_cell(env, mfa, export_list);
+	xlink = xlink->next;
+    }
+    enif_keep_resource(crp);
     term = enif_make_resource(env,crp);
     enif_release_resource(crp);
     return enif_make_tuple2(env, export_list, term);
@@ -773,6 +910,51 @@ ERL_NIF_TERM make_type(ErlNifEnv* env, sig_type_t type)
     }
 }
 
+ERL_NIF_TERM make_addr_list(ErlNifEnv* env, addr_entry_t* ap,
+			    addr_type_t type)
+{
+    ERL_NIF_TERM list = enif_make_list(env, 0);
+    while(ap != NULL) {
+	if (type == ADDR_ALL) {
+	    ERL_NIF_TERM addr_type;
+	    ERL_NIF_TERM elem;
+
+	    switch(ap->type) {
+	    case ADDR_CONST: addr_type = ATOM(const); break;
+	    case ADDR_LABEL: addr_type = ATOM(label); break;
+	    case ADDR_JUMP:  addr_type = ATOM(jump); break;		
+	    default: addr_type = ATOM(undefined); break;
+	    }
+	    elem = enif_make_tuple3(env, ap->name, addr_type,
+				    enif_make_uint64(env, ap->addr));
+	    list = enif_make_list_cell(env, elem, list);	
+	}
+	if ((type == ADDR_ALL) || (ap->type == type)) {
+	    ERL_NIF_TERM elem =
+		enif_make_tuple2(env, ap->name,
+				 enif_make_uint64(env, ap->addr));
+	    list = enif_make_list_cell(env, elem, list);
+	}
+	ap = ap->next;
+    }
+    return list;
+}
+
+ERL_NIF_TERM make_export_list(ErlNifEnv* env, export_link_t* xlink)
+{
+    ERL_NIF_TERM list = enif_make_list(env, 0);
+    while(xlink != NULL) {
+	export_entry_t* xent = xlink->exp;
+	int nargs = arg_types_argc(xent->arg_types);
+	ERL_NIF_TERM mfa = enif_make_tuple3(env, xent->mod, xent->fun,
+					    enif_make_int(env, nargs));
+	list = enif_make_list_cell(env, mfa, list);
+	xlink = xlink->next;
+    }
+    return list;
+}
+
+
 ERL_NIF_TERM nif_code_info(ErlNifEnv* env, int argc,
 			   const ERL_NIF_TERM argv[])
 {
@@ -789,35 +971,51 @@ ERL_NIF_TERM nif_code_info(ErlNifEnv* env, int argc,
 	if (xent->addr == address_exception)
 	    return EXCP_BADARG_N(env, 0, "not loaded");
     }
+    if (crp == NULL)
+	return ATOM(undefined);
 
     if (argv[1] == ATOM(code)) {
 	ERL_NIF_TERM bin;
 	unsigned char* dst;
-	if ((crp == NULL) || (crp->code_size == 0))
-	    return ATOM(undefined);
 	dst = enif_make_new_binary(env, crp->code_size, &bin);
 	memcpy(dst, crp->addr, crp->code_size);
 	return bin;
     }
     if (argv[1] == ATOM(code_size)) {
-	if (crp == NULL)
-	    return ATOM(undefined);	    
 	return make_uw(env, crp->code_size);
     }
     if (argv[1] == ATOM(exec_offset)) {
-	if (crp == NULL)
-	    return ATOM(undefined);	    
 	return make_sw(env, crp->exec_offset);
     }
-    if (xent != NULL) {
-	if (argv[1] == ATOM(argc)) {
-	    int argc = arg_types_argc(xent->arg_types);
-	    return enif_make_int(env, argc);
-	}
-	if (argv[1] == ATOM(return_type)) {
-	    return make_type(env, ARGTYPE_RET(xent->arg_types));
-	}
-	if (enif_is_tuple(env, argv[1])) {
+    if (argv[1] == ATOM(const_list)) {
+	return make_addr_list(env, crp->addr_list, ADDR_CONST);
+    }
+    if (argv[1] == ATOM(label_list)) {
+	return make_addr_list(env, crp->addr_list, ADDR_LABEL);	
+    }    
+    if (argv[1] == ATOM(jump_list)) {
+	return make_addr_list(env, crp->addr_list, ADDR_JUMP);
+    }
+    if (argv[1] == ATOM(addr_list)) {
+	return make_addr_list(env, crp->addr_list, ADDR_ALL);
+    }
+    if (argv[1] == ATOM(export_list)) {
+	return make_export_list(env, crp->exp_list);
+    }
+    if (argv[1] == ATOM(argc)) {
+	if (xent == NULL)
+	    return ATOM(undefined);
+	return enif_make_int(env, arg_types_argc(xent->arg_types));
+    }
+    if (argv[1] == ATOM(return_type)) {
+	if (xent == NULL)
+	    return ATOM(undefined);	
+	return make_type(env, ARGTYPE_RET(xent->arg_types));
+    }
+    if (enif_is_tuple(env, argv[1])) {
+	if (xent == NULL)
+	    return ATOM(undefined);
+	else {
 	    int arity;
 	    const ERL_NIF_TERM* elems;
 	    int index;
@@ -825,14 +1023,15 @@ ERL_NIF_TERM nif_code_info(ErlNifEnv* env, int argc,
 		return EXCP_BADARG_N(env, 1, "not a pair");
 	    if (elems[0] != ATOM(arg_type))
 		return EXCP_BADARG_N(env, 1, "not arg_type");
-	    if (!enif_get_int(env, elems[1], &index) || (index < 1) || (index > 4))
+	    if (!enif_get_int(env, elems[1], &index) || (index < 1) ||
+		(index > 4))
 		return EXCP_BADARG_N(env, 1, "not arg index (1..4)");
-	    if (index > arg_types_argc(xent->arg_types)) return ATOM(undefined);
+	    if (index > arg_types_argc(xent->arg_types))
+		return ATOM(undefined);
 	    return make_type(env, ARGTYPE(xent->arg_types,index));
 	}
-	return EXCP_BADARG_N(env, 1, "not a code info");
     }
-    return EXCP_BADARG_N(env, 0, "not mod/fun pair");
+    return EXCP_BADARG_N(env, 1, "unknown info");
 }
 
 #include <avcall.h>
@@ -864,7 +1063,8 @@ ERL_NIF_TERM nif_avcall(ErlNifEnv* env, int argc,
 	return EXCP_BADARG_N(env, 0, "not loaded");
     if (arg_types_argc(xent->arg_types) != argc-1)
 	return EXCP_BADARG_N(env, 0, "wrong number of arguments");
-    
+
+    DBG("check return type\r\n");
     switch (ARGTYPE_RET(xent->arg_types)) {
     case TYPE_VOID:
 	av_start_void(alist, xent->addr);
@@ -889,9 +1089,10 @@ ERL_NIF_TERM nif_avcall(ErlNifEnv* env, int argc,
 	av_start_ptr(alist, xent->addr, void*,  &ret.ptr);
 	break;
     }
-
+    
     // parse all arguments
     for (i = 0; i < argc-1; i++) {
+	DBG("parse arguments %d\r\n", i);
 	switch(ARGTYPE(xent->arg_types, i+1)) {
 	case TYPE_TERM:
 	case TYPE_TERM_R:
@@ -930,9 +1131,10 @@ ERL_NIF_TERM nif_avcall(ErlNifEnv* env, int argc,
 	    return EXCP_BADARG_N(env, i+1, "internal error");
 	}
     }
-
+    DBG("call function\r\n");
     av_call (alist);
 
+    DBG("handle reply\r\n");    
     switch(ARGTYPE_RET(xent->arg_types)) {
     case TYPE_VOID:
 	return ATOM(ok);
@@ -1328,7 +1530,7 @@ ERL_NIF_TERM nif_emit_jump(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     compiler_t* cp;
     sljit_s32 type;
     struct sljit_jump* jump;
-    jump_t* jmp;    
+    jump_t* jmp;
     ERL_NIF_TERM term;
     
     if (!enif_get_resource(env, argv[0], compiler_res, (void**)&cp))
@@ -1732,30 +1934,72 @@ ERL_NIF_TERM nif_emit_simd_op2(ErlNifEnv* env, int argc,
     return nif_return(env, ret);
 }
 
+// FIXME: need to versions
+// one is "uiu" and one is "uis"
+//
 ERL_NIF_TERM nif_emit_const(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
     UNUSED(argc);
     compiler_t* cp;
     const_t* cpp;
+    sljit_s32 op;    
     sljit_s32 dst; sljit_sw dstw;
     sljit_sw init_value;
-    ERL_NIF_TERM term;
+    ERL_NIF_TERM def = 0;
+    ERL_NIF_TERM term;    
     
     if (!enif_get_resource(env, argv[0], compiler_res, (void**)&cp))
 	return EXCP_BADARG_N(env, 0, "not a compiler");
-    if (!get_s32(env, argv[1], &dst))
+    if (!get_s32(env, argv[1], &op))
 	return EXCP_BADARG_N(env, 1, "not an integer");
-    if (!get_sw(env, argv[2], &dstw))
+    if (!get_s32(env, argv[2], &dst))
 	return EXCP_BADARG_N(env, 2, "not an integer");
-    if (!get_sw(env, argv[3], &init_value))
+    if (!get_sw(env, argv[3], &dstw))
 	return EXCP_BADARG_N(env, 3, "not an integer");
+    if (enif_is_atom(env, argv[4])) {
+	init_value = 0;
+	def = argv[4];
+    }
+    else if (!get_sw(env, argv[4], &init_value))
+	return EXCP_BADARG_N(env, 4, "not an integer");
 
-    cpp = enif_alloc_resource(const_res, sizeof(const_t));    
-    cpp->constp = sljit_emit_const(cp->compiler, dst, dstw, init_value);
+    cpp = enif_alloc_resource(const_res, sizeof(const_t));
+    cpp->def = def;
+    cpp->constp = sljit_emit_const(cp->compiler, op, dst, dstw, init_value);
+    cpp->op = op;
     term = enif_make_resource(env,cpp);
     enif_release_resource(cpp);
     return term;
 }
+
+ERL_NIF_TERM nif_emit_mov_addr(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+    UNUSED(argc);   
+    compiler_t* cp;
+    sljit_s32 op;
+    sljit_s32 dst; sljit_sw dstw;    
+    struct sljit_jump* jump;
+    jump_t* jmp;
+    ERL_NIF_TERM term;
+    
+    if (!enif_get_resource(env, argv[0], compiler_res, (void**)&cp))
+	return EXCP_BADARG_N(env, 0, "not a compiler");
+    if (!get_s32(env, argv[1], &op))
+	return EXCP_BADARG_N(env, 1, "not an integer");    
+    if (!get_s32(env, argv[2], &dst))
+	return EXCP_BADARG_N(env, 2, "not an integer");
+    if (!get_sw(env, argv[3], &dstw))
+	return EXCP_BADARG_N(env, 3, "not an integer");    
+
+    if ((jump = sljit_emit_mov_addr(cp->compiler, op, dst, dstw)) == NULL)
+	return nif_return(env, SLJIT_ERR_ALLOC_FAILED);
+    jmp = enif_alloc_resource(jump_res, sizeof(jump_t));
+    jmp->jump = jump;
+    term = enif_make_resource(env,jmp);
+    enif_release_resource(jmp);
+    return term;
+}
+
 
 ERL_NIF_TERM nif_get_const_addr(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
@@ -1774,9 +2018,9 @@ ERL_NIF_TERM nif_set_constant(ErlNifEnv* env, int argc,
 			      const ERL_NIF_TERM argv[])
 {
     UNUSED(argc);
-    code_t* crp = NULL;    
+    code_t* crp = NULL;
     sljit_sw new_constant;
-    constant_entry_t* cent;
+    addr_entry_t* ap;
     module_entry_t* ment = NULL;    
 
     if (get_module(env, argv[0], &ment))
@@ -1787,18 +2031,58 @@ ERL_NIF_TERM nif_set_constant(ErlNifEnv* env, int argc,
 	return EXCP_BADARG_N(env, 0, "not code");    
     if (!enif_is_atom(env, argv[1]))
 	return EXCP_BADARG_N(env, 1, "not a constant name");
-    if (!get_sw(env, argv[2], &new_constant))
-	return EXCP_BADARG_N(env, 2, "not an integer");
-    cent = crp->const_list;
-    while(cent != NULL) {
-	if (cent->name == argv[1]) {
-	    sljit_set_const(cent->addr, new_constant, crp->exec_offset);
-	    return ATOM(ok);
-	}
-	cent = cent->next;
+    if ((ap = lookup_addr(crp->addr_list, argv[1], ADDR_CONST)) == NULL)
+	return EXCP_BADARG_N(env, 1, "not a constant name");
+
+    if (get_sw(env, argv[2], &new_constant)) {
+	sljit_set_const(ap->addr, ap->cnst->op, new_constant, crp->exec_offset);
     }
-    return EXCP_BADARG_N(env, 1, "not a constant name");    
+    else if (enif_is_atom(env, argv[2])) {  // check if label
+	addr_entry_t* bp;
+	if ((bp = lookup_addr(crp->addr_list, argv[2], ADDR_LABEL)) == NULL)
+	    return EXCP_BADARG_N(env, 2, "not a label name");
+	new_constant = (sljit_sw) bp->addr;
+    }
+    else {
+	return EXCP_BADARG_N(env, 2, "not integer nor label name");
+    }
+    sljit_set_const(ap->addr, ap->cnst->op, new_constant, crp->exec_offset);
+    return ATOM(ok);	
+    
 }
+
+// set_jump 
+ERL_NIF_TERM nif_set_jump(ErlNifEnv* env, int argc,
+			  const ERL_NIF_TERM argv[])
+{
+    UNUSED(argc);
+    code_t* crp = NULL;    
+    addr_entry_t* target;
+    addr_entry_t* jump;    
+    module_entry_t* ment = NULL;    
+
+    if (get_module(env, argv[0], &ment))
+	crp = ment->current;
+    else if (enif_get_resource(env, argv[0], code_res, (void**)&crp))
+	ment = crp->mod_ent;
+    else 
+	return EXCP_BADARG_N(env, 0, "not code");
+    if (!enif_is_atom(env, argv[1]))
+	return EXCP_BADARG_N(env, 1, "not a jump name");
+    if (!enif_is_atom(env, argv[2]))
+	return EXCP_BADARG_N(env, 2, "not a label name");
+    
+    if ((jump = lookup_addr(crp->addr_list, argv[1], ADDR_JUMP)) == NULL)
+	return EXCP_BADARG_N(env, 1, "not a jump");
+    if ((target = lookup_addr(crp->addr_list, argv[2], ADDR_LABEL)) == NULL)
+	return EXCP_BADARG_N(env, 2, "not a target");
+    
+    enif_fprintf(stdout, "jump=%p, target=%p\r\n",
+		 jump->addr, target->addr);
+    sljit_set_jump_addr(jump->addr, target->addr, crp->exec_offset);
+    return ATOM(ok);
+}
+
 
 // create all tracing NIFs
 #ifdef NIF_TRACE
@@ -1857,10 +2141,13 @@ static void compiler_dtor(ErlNifEnv* env, void* ptr)
 static void code_dtor(ErlNifEnv* env, void* ptr)
 {
     code_t* crp = (code_t*) ptr;
-    export_link_t* xlink = crp->exp_list;
+    export_link_t* xlink;
+    addr_entry_t* ap;
+    
     UNUSED(env);
     DBG("code_dtor\r\n");
-
+    
+    xlink = crp->exp_list;
     while(xlink != NULL) {
 	export_link_t* xnext = xlink->next;
 	export_entry_t* xent = xlink->exp;
@@ -1874,8 +2161,18 @@ static void code_dtor(ErlNifEnv* env, void* ptr)
 	enif_free(xlink);
 	xlink = xnext;
     }
-    crp->mod_ent = NULL;
     crp->exp_list = NULL;
+    
+    ap = crp->addr_list;
+    while(ap != NULL) {
+	addr_entry_t* anext = ap->next;
+	enif_release_resource(ap->res);
+	enif_free(ap);
+	ap = anext;
+    }
+    crp->addr_list = NULL;
+    
+    crp->mod_ent = NULL;
     // FIXME: scan p->mod_list and clean up all export_entries
     sljit_free_code(crp->addr, crp->exec_allocator_data);
 }
@@ -1908,6 +2205,8 @@ static void load_atoms(ErlNifEnv* env)
 {
     LOAD_ATOM(sljit);
     LOAD_ATOM(ok);
+    LOAD_ATOM(true);
+    LOAD_ATOM(false);    
     LOAD_ATOM(error);
     LOAD_ATOM(enoent);
     LOAD_ATOM(ealready);
@@ -1927,6 +2226,15 @@ static void load_atoms(ErlNifEnv* env)
     LOAD_ATOM(return_type);
     LOAD_ATOM(argc);
     LOAD_ATOM(arg_type);
+    LOAD_ATOM(const_list);
+    LOAD_ATOM(label_list);
+    LOAD_ATOM(jump_list);
+    LOAD_ATOM(addr_list);
+    LOAD_ATOM(export_list);
+    LOAD_ATOM(const);
+    LOAD_ATOM(label);
+    LOAD_ATOM(jump);
+    LOAD_ATOM(addr); 
 
     LOAD_ATOM(void);
     LOAD_ATOM(word);

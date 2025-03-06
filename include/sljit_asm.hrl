@@ -38,12 +38,14 @@
 -define(FMT_MCALL,       27).  %% module:function call
 -define(FMT_MJUMP,       28).  %% module:name jump
 -define(FMT_CONST,       29).
+-define(FMT_MOV_ADDR,    30).
 
 %% synthetic formats label names constants etc
 -define(FMT_LABEL_NAME,  16#80+1).  %% unsigned integer
 -define(FMT_MODULE,      16#80+2).  %% string (=> atom)
 -define(FMT_FUNCTION,    16#80+3).  %% string (=> atom)
 -define(FMT_CONST_NAME,  16#80+4).
+-define(FMT_JUMP_NAME,   16#80+5).  %% strint (=> atom)
 %% -define(FMT_LAST, 	 28).
 
 %% instruction layout
@@ -100,8 +102,10 @@
 	?FMT_NAME(simd_op2, ?FMT_SIMD_OP2)
 	?FMT_NAME(label_name, ?FMT_LABEL_NAME)
 	?FMT_NAME(const_name, ?FMT_CONST_NAME)
+	?FMT_NAME(jump_name, ?FMT_JUMP_NAME)
 	?FMT_NAME(module, ?FMT_MODULE)
 	?FMT_NAME(function, ?FMT_FUNCTION)
+	?FMT_NAME(mov_addr, ?FMT_MOV_ADDR)
        ).
 
 -endif.

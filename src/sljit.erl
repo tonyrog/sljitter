@@ -9,6 +9,9 @@
 
 -on_load(init/0).
 -export([get_platform_name/0]).
+-export([cpu_features/0]).
+-export([cpu_feature/1]).
+-export([has_cpu_feature/1]).
 -export([create_compiler/0]).
 -export([generate_code/1]).
 -export([unregister_code/1]).
@@ -32,9 +35,12 @@
 -export([emit_fcopy/4]).
 -export([label_name/2]).
 -export([const_name/2]).
+-export([jump_name/2]).
 -export([module/2]).
 -export([function/2]).
 -export([constant/3]).
+-export([label_addr/3]).
+-export([jump_addr/3]).
 -export([emit_label/1]).
 -export([emit_jump/2]).
 -export([emit_call/3]).
@@ -53,17 +59,34 @@
 -export([emit_return_to/3]).
 -export([emit_simd_op2/6]).
 -export([get_label_addr/1]).
--export([emit_const/4]).
--export([set_constant/2]).
--export([set_constant/3]).
+-export([emit_const/5]).
+-export([set_constant/2, set_constant/3]).
+-export([emit_mov_addr/4]).
+-export([set_jump/2, set_jump/3]).
+
+%% -export([emit_select/6]).
+%% -export([emit_fselect/6]).
+%% -export([emit_mem/5]).
+%% -export([emit_mem_update/5]).
+%% -export([emit_fmem/5]).
+%% -export([emit_fmem_update/5]).
+%% -export([emit_simd_move/4]).
+%% -export([emit_simd_replicate/5]).
+%% -export([emit_simd_lane_mov/6]).
+%% -export([emit_simd_lane_replicate/5]).
+%% -export([emit_simd_extend/5]).
+%% -export([emit_simd_sign/4]).
+
 
 -type compiler() :: reference().
--type code() :: reference() | {Mod::atom(), Func::atom()} | 
+-type code() :: reference() | Mod::atom() | {Mod::atom(), Func::atom()} | 
 		{reference(), Func::atom()}.
 -type label() :: reference().
 -type jump() :: reference().
 -type const() :: reference().
 -type unsigned() :: non_neg_integer().
+
+-include("../include/sljit.hrl").
 
 -define(nif_stub(),
 	erlang:nif_error({nif_not_loaded,module,?MODULE,line,?LINE})).
@@ -80,6 +103,43 @@ create_compiler() ->
 get_platform_name() ->
     ?nif_stub().
 
+feature_map() ->
+    #{ has_fpu => ?SLJIT_HAS_FPU,
+       has_virtual_registers => ?SLJIT_HAS_VIRTUAL_REGISTERS,
+       has_zero_register => ?SLJIT_HAS_ZERO_REGISTER,
+       has_clz => ?SLJIT_HAS_CLZ,
+       has_ctz => ?SLJIT_HAS_CTZ,
+       has_rev => ?SLJIT_HAS_REV,
+       has_rot => ?SLJIT_HAS_ROT,
+       has_cmov => ?SLJIT_HAS_CMOV,
+       has_prefetch => ?SLJIT_HAS_PREFETCH,
+       has_copy_f32 => ?SLJIT_HAS_COPY_F32,
+       has_copy_f64 => ?SLJIT_HAS_COPY_F64,
+       has_f64_as_f32_pair => ?SLJIT_HAS_F64_AS_F32_PAIR,
+       has_simd => ?SLJIT_HAS_SIMD,
+       simd_regs_are_pairs => ?SLJIT_SIMD_REGS_ARE_PAIRS,
+       has_atomic => ?SLJIT_HAS_ATOMIC,
+       has_memory_barrier => ?SLJIT_HAS_MEMORY_BARRIER,
+       has_avx => ?SLJIT_HAS_AVX,
+       has_avx2 => ?SLJIT_HAS_AVX2,
+       has_lasx => ?SLJIT_HAS_LASX
+     }.
+
+
+-spec has_cpu_feature(Feature::integer()) ->
+	  boolean().
+has_cpu_feature(_Feature) ->
+    ?nif_stub().
+
+cpu_features() ->
+    [ {Name, has_cpu_feature(Flag)} || {Name,Flag} <- maps:to_list(feature_map()) ].
+
+cpu_feature(Name) when is_atom(Name) ->
+    case maps:find(Name, feature_map()) of
+	{ok, F} -> has_cpu_feature(F);
+	error -> exit(no_such_feature)
+    end.
+
 -spec generate_code(compiler()) -> code().
 generate_code(_Compiler) ->
     ?nif_stub().
@@ -92,17 +152,25 @@ unregister_code(_Mod) ->
 
 
 -type code_info_key() :: code_size | exec_offset | 
-			 argc | return_type | {arg_type,1..4}.
+			 argc | return_type | {arg_type,1..4} |
+			 addr_list | label_list | jump_list | const_list.
 
 -spec code_info(code(), Key::code_info_key()) -> term().
 code_info(_Code, _Info) ->
     ?nif_stub().
 
 -spec code_info(code()) -> [{Key::code_info_key(),Value::term()}].
-code_info(Code) ->
+code_info(Code) when is_atom(Code); is_reference(Code) ->
     [{Key, code_info(Code, Key)} || 
-	Key <- [code_size, exec_offset, argc, return_type, 
+	Key <- [code_size, exec_offset, 
+		label_list, jump_list, const_list, export_list
+	       ]];
+code_info(Code={Mod,Fun}) when is_atom(Mod), is_atom(Fun);
+			       is_reference(Mod), is_atom(Fun) ->
+    [{Key, code_info(Code, Key)} ||     
+	Key <- [argc, return_type, 
 		{arg_type,1},{arg_type,2},{arg_type,3},{arg_type,4}]].
+
 
 -spec get_code(code()) -> binary().
 get_code(Code) ->
@@ -228,6 +296,10 @@ label_name(_Compiler, _Label) ->
 const_name(_Compiler, _Name) ->
     ok.
 
+-spec jump_name(compiler(), Label::term()) -> ok.
+jump_name(_Compiler, _Label) ->
+    ok.
+
 %% Set current module name
 -spec module(compiler(), Name::atom()) -> ok.
 module(_Compiler, _Name) ->
@@ -246,6 +318,17 @@ constant(_Compiler, _Name, _Const) ->
 -spec emit_label(compiler()) -> label().
 emit_label(_Compiler) ->
     ?nif_stub().
+
+%% create runtime label (jump target)
+-spec label_addr(compiler(), Name::atom(), _Label::label()) -> ok.
+label_addr(_Compiler, _Name, _Label) ->
+    ?nif_stub().
+
+%% create runtime jump (source)
+-spec jump_addr(compiler(), Name::atom(), _Jump::jump()) -> ok.
+jump_addr(_Compiler, _Name, _Jump) ->
+    ?nif_stub().
+
 
 -spec emit_jump(compiler(), _Type::integer()) -> jump().
 emit_jump(_Compiler, _Type) ->
@@ -271,7 +354,7 @@ emit_fcmp(_Compiler, _Type, _Src1, _Src1w, _Src2, _Src2w) ->
 
 -spec set_label(jump(), label()) -> ok.
 set_label(_Jump, _Label) ->
-	?nif_stub().
+    ?nif_stub().
 
 -spec set_target(jump(), Target::unsigned()) -> ok.
 set_target(_Jump, _Target) ->
@@ -325,10 +408,18 @@ emit_simd_op2(_Compiler, _Type, _DstVreg, _Src1VReg, _Src2, _Src2w) ->
 get_label_addr(_Label) ->
     ?nif_stub().    
 
--spec emit_const(compiler(), Dst::integer(), Dstw::integer(), 
+%% op is one of
+%% SLJIT_MOV, 
+%% SLJIT_MOV32,
+%% SLJIT_MOV_S32,
+%% SLJIT_MOV_U8,   (init value may be 9 signed bits????)
+%% SLJIT_MOV32_U8
+-spec emit_const(compiler(), Op::integer(),
+		 Dst::integer(), Dstw::integer(), 
 		 InitValue::integer()) -> const().
-emit_const(_Compiler, _Dst, _DstW, _InitValue) -> 
-    ?nif_stub().    
+emit_const(_Compiler, _Op, _Dst, _DstW, _InitValue) -> 
+    ?nif_stub().
+
 
 set_constant({CodeorMod,Name}, NewConstant) ->
     set_constant(CodeorMod, Name, NewConstant).
@@ -336,4 +427,25 @@ set_constant({CodeorMod,Name}, NewConstant) ->
 -spec set_constant(CodeOrMod::code()|atom(), Name::atom(), 
 		   NewConstant::integer()) -> ok.
 set_constant(_CodeOrMod, _Name, _NewConstant) ->
+    ?nif_stub().
+
+%% op is one off
+%% SLJIT_MOV_ADDR     -- The address is suitable for jump/call target.
+%% SLJIT_MOV_ABS_ADDR -- The address is suitable for reading memory.
+-spec emit_mov_addr(Compiler::compiler(),  Op::integer(),
+		    Dst::integer(), Dstw::integer()) ->
+	  jump().
+
+emit_mov_addr(_Compiler, _Op, _Dst, _Dstw) ->
+    ?nif_stub().
+
+-spec set_jump({CodeOrMod::code()|atom(), Name::atom()}, NewTarget::atom()) ->
+	  ok.
+set_jump({CodeOrMod,JumpName}, NewTarget) ->
+    set_jump(CodeOrMod, JumpName, NewTarget).
+
+-spec set_jump(CodeOrMod::code()|atom(), JumpName::atom(), NewTarget::atom()) ->
+	  ok.
+
+set_jump(_CodeOrMod,_JumpName,_NewTarget) ->
     ?nif_stub().

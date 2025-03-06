@@ -6,11 +6,11 @@
 
 %% when is_small(r0)
 {'and', r2, r0, 16#f}.
-{jump, {cmp, not_equal, r2, 16#f}, badarg}.
+{jump, [{not_equal, r2, 16#f}], badarg}.
 
 %% when is_small(r1)
 {'and', r2, r1, 16#f}.
-{jump, {cmp, not_equal, r2, 16#f}, badarg}.
+{jump, [{not_equal, r2, 16#f}], badarg}.
 
 %% arithmetically remove tag from r0 and r1
 {'ashr', r0, r0, 4}.
