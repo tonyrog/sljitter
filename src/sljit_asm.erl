@@ -8,7 +8,7 @@
 -module(sljit_asm).
 
 -export([assemble/1, assemble/2]).
--export([disasm/1]).
+-export([disasm/1, disasm/2]).
 -export([load/1]).
 -export([save_as_bin/2]).
 -export([asm_ins_list/3, asm_ins/3]).
@@ -77,24 +77,24 @@
 -type simd_op2() :: vand | vor | vxor | shuffle.
 
 -type scratch_reg() :: r0 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 |
-		       {r, 0..255}.
+		       r10 | r11 | r12 | r13 | r14 | r15 | {r, 0..255}.
 -type saved_reg() :: s0 | s1 | s2 | s3 | s4 | s5 | s6 | s7 | s8 | s9 |
-		     {s, 0..255}.
+		     s10 | s11 | s12 | s13 | s14 | s15 | {s, 0..255}.
 -type reg() :: scratch_reg() | saved_reg().
 
 -type float_reg() :: 
 	fr0 | fr1 | fr2 | fr3 | fr4 | fr5 | fr6 | fr7 | fr8 | fr9 |
-	{fr, 0..255}.
+	fr10 | fr11 | fr12 | fr13 | fr14 | fr15 | {fr, 0..255}.
 -type float_saved_reg() ::
 	fs0 | fs1 | fs2 | fs3 | fs4 | fs5 | fs6 | fs7 | fs8 | fs9 |
-	{fs, 0..255}.
+	fs10 | fs11 | fs12 | fs13 | fs14 | fs15 | {fs, 0..255}.
 -type freg() :: float_reg() | float_saved_reg().
 
 -type vec_reg() :: vr0 | vr1 | vr2 | vr3 | vr4 | vr5 | vr6 | vr7 | vr8 | vr9 |
-		   {vr, 0..255}.
+		   vr10 | vr11 | vr12 | vr13 | vr14 | vr15 | {vr, 0..255}.
 -type vec_saved_reg() ::
 	vs0 | vs1 | vs2 | vs3 | vs4 | vs5 | vs6 | vs7 | vs8 | vs9 | 
-	{vs, 0..255}.
+	vs10 | vs11 | vs12 | vs13 | vs14 | vs15 | {vs, 0..255}.
 -type vreg() :: vec_reg() | vec_saved_reg().
 
 -type mem() :: {mem, integer()} |              %% [imm]
@@ -161,26 +161,61 @@ assemble(Filename, DstFilename) ->
 	    Error
     end.
 
-%% load slo fie as assembler list
 disasm(Filename) ->
+    disasm(Filename, undefined).
+
+disasm(Filename, Output) ->
     case file:read_file(Filename) of
 	{ok, Bin} ->
-	    disasm_object(Bin, #{}, []);
+	    if 
+		Output =:= undefined ->
+		    disasm_object(Bin, #{}, Output, []);
+		Output =:= standard_io;
+		Output =:= standard_error;
+		Output =:= user;
+		element(1, Output) =:= file_descriptor;
+		is_pid(Output) ->
+		    disasm_object(Bin, #{}, Output, ok);
+		is_binary(Output); is_list(Output) ->
+		    {ok, Fd} = file:open(Output, [raw,read,write,trunc]),
+		    try disasm_object(Bin, #{}, Fd, ok) of
+			Ret -> Ret
+		    after
+			file:close(Fd)
+		    end
+	    end;
 	Error ->
 	    Error
     end.
 
-disasm_object(<<>>, _St, Acc) ->
+disasm_object(<<>>, _St, _Fd, ok) ->
+    ok;
+disasm_object(<<>>, _St, _Fd, Acc) ->
     {ok, lists:reverse(Acc)};
-disasm_object(<<Sz, Data:Sz/binary, Rest/binary>>, St, Acc) ->
+disasm_object(<<Sz, Data:Sz/binary, Rest/binary>>, St, Out, Acc) ->
     <<F, Args/binary>> = Data,
     case disasm_ins(F, Args, St) of
 	{nop, St1} ->
-	    disasm_object(Rest, St1, Acc);
+	    disasm_object(Rest, St1, Out, Acc);
 	{Ins, St1} ->
-	    io:format("Ins = ~p\n", [Ins]),
-	    disasm_object(Rest, St1, [Ins|Acc])
+	    print_object(Ins, Out),
+	    if is_list(Acc) ->
+		    disasm_object(Rest, St1, Out, [Ins|Acc]);
+	       true ->
+		    disasm_object(Rest, St1, Out, Acc)
+	    end
     end.
+
+print_object(_, undefined) ->
+    ok;
+print_object(Ins, Fd) ->
+    case element(1, Ins) of
+	module -> io:format(Fd, "~p.\n", [Ins]);
+	function -> io:format(Fd, "~p.\n", [Ins]);
+	label -> io:format(Fd, "~p.\n", [Ins]);
+	_ -> io:format(Fd, "  ~p.\n", [Ins])
+    end.
+
 
 
 -undef(OP0_NAME).
@@ -217,13 +252,13 @@ disasm_ins(F, Args, St) ->
 	{?FMT_FUNCTION, [Fun]} ->
 	    {{function,list_to_atom(Fun)},St};
 	{?FMT_LABEL_NAME, [Name]} ->
-	    io:format("label_name = ~p\n", [Name]),
+	    %% ?dbg("label_name = ~p\n", [Name]),
 	    {nop, St#{label_name => Name}};
 	{?FMT_JUMP_NAME, [Name]} ->
-	    io:format("jump_name = ~p\n", [Name]),
+	    %% ?dbg("jump_name = ~p\n", [Name]),
 	    {nop, St#{jump_name => Name}};
 	{?FMT_CONST_NAME, [Name]} ->
-	    io:format("const_name = ~p\n", [Name]),
+	    %% ?dbg("const_name = ~p\n", [Name]),
 	    {nop, St#{const_name => Name}};
 	{?FMT_OP0,[Op]} -> 
 	    Name = case Op of
@@ -268,38 +303,43 @@ disasm_ins(F, Args, St) ->
 		       ?FOP1_LIST
 		       _ -> throw({error, {unknown_fop, Op}})
 		   end,
-	    {{Name, {Dst, Dstw}, {Src, Srcw}},St};
+	    {{Name, dfdst(Dst,Dstw), dfsrc(Src, Srcw)},St};
 	{?FMT_FOP2, [Op, Dst, Dstw, Src1, Src1w, Src2, Src2w]} ->
 	    Name = case Op of
 		       ?FOP2_LIST
 		       _ -> throw({error, {unknown_fop, Op}})
 		   end,
-	    {{Name, {Dst, Dstw}, {Src1, Src1w},{Src2, Src2w}},St};
+	    {{Name, dfdst(Dst,Dstw), dfsrc(Src1,Src1w),dfsrc(Src2,Src2w)},St};
 	{?FMT_FOP2R, [Op, DR, Src1, Src1w, Src2, Src2w]} ->
 	    Name = case Op of
 		       ?FOP1_LIST
 		       _ -> throw({error, {unknown_fop, Op}})
 		   end,
-	    {{Name, DR, {Src1, Src1w},{Src2, Src2w}}, St};
+	    {{Name, dfreg(DR), dfsrc(Src1,Src1w),dfsrc(Src2, Src2w)}, St};
 	{?FMT_FSET32, [FReg, Value]} ->
-	    {{fset32, FReg, Value}, St};
+	    {{fset32, dfreg(FReg), Value}, St};
 	{?FMT_FSET64, [FReg, Value]} ->
-	    {{fset64, FReg, Value}, St};
+	    {{fset64, dfreg(FReg), Value}, St};
 	{?FMT_FCOPY, [Op,FReg,Reg]} ->
-	    {{Op,FReg,Reg},St};
+	    {{Op,dfreg(FReg),dfreg(Reg)},St};
 	{?FMT_LABEL, []} -> 
 	    {{label, maps:get(label_name, St)}, St};
 	{?FMT_CMP, [Type, Src1, Src1w, Src2, Src2w]} ->
 	    L = maps:get(label_name, St),
-	    {{Type, dsrc(Src1,Src1w), dsrc(Src2,Src2w), L}, St};
+	    T = dec_cmp(Type),
+	    {Opts0,St1} = dec_jump_src(Type, St),
+	    {{jump,[{T, dsrc(Src1,Src1w),dsrc(Src2,Src2w)}|Opts0],L}, St1};
+	{?FMT_JUMP, [Type]} ->
+	    L = maps:get(label_name, St),
+	    T = dec_status(Type),
+	    {Opts0,St1} = dec_jump_src(Type, St),
+	    {{jump, [T|Opts0], L}, St1};
 	{?FMT_FCMP, [Type, Src1, Src1w, Src2, Src2w]} ->
 	    L = maps:get(label_name, St),
 	    {{Type, {Src1,Src1w}, {Src2,Src2w}, L}, St};
-	{?FMT_JUMP, [Type]} ->
-	    L = maps:get(label_name, St),
-	    {{jump, Type, L}, St};
+
 	{?FMT_IJUMP,[Type, Src, Srcw]} ->
-	    {{ijump, Type, dsrc(Src,Srcw)}, St};
+	    {{ijump, dec_ijump_type(Type), dsrc(Src,Srcw)}, St};
 	{?FMT_MJUMP,[Type, Mod, Fun]} -> 
 	    {{mjump, Type, {list_to_atom(Mod), list_to_atom(Fun)}}, St};
 	{?FMT_CALL, [Type, ArgTypes]} ->
@@ -317,9 +357,15 @@ disasm_ins(F, Args, St) ->
 	{?FMT_RETURN_VOID,[]} ->
 	    {{return}, St};
 	{?FMT_RETURN,[Op,Src,Srcw]} ->
-	    {{return,Op,dsrc(Src,Srcw)}, St};
+	    {T,S} = case Op of
+			?SLJIT_MOV -> {mov, dsrc(Src,Srcw)};
+			?SLJIT_MOV_P -> {mov_p, dsrc(Src,Srcw)};
+			?SLJIT_MOV_F32 -> {mov_f32, dfsrc(Src,Srcw)};
+			?SLJIT_MOV_F64 -> {mov_f64, dfsrc(Src,Srcw)}
+		    end,
+	    {{return,T,S}, St};
 	{?FMT_SIMD_OP2,[Op, DstVReg, Src1VReg, Src2, Src2w]} ->
-	    {{Op,DstVReg,Src1VReg, dsrc(Src2, Src2w)},St};
+	    {{Op,dvreg(DstVReg),dvreg(Src1VReg), dsrc(Src2, Src2w)},St};
 	{?FMT_CONST, [Op, Dst, Dstw, InitValue]} ->
 	    Name = maps:get(const_name, St),
 	    St1 = maps:remove(const_name, St),
@@ -344,6 +390,8 @@ save_as_bin(Code, DstFilename) ->
     Bin = sljit:get_code(Code),
     file:write_file(DstFilename1, Bin).
 
+
+    
 
 load(Filename) ->
     case filename:extension(Filename) of
@@ -453,12 +501,10 @@ slo_ins(Compile, Ins, St) ->
 	{?FMT_LABEL, []} -> 
 	    L = maps:get(label_name, St),
 	    ins_label(Compile, {label, L}, St);
-
 	{?FMT_CMP, [Type, Src1, Src1w, Src2, Src2w]} ->
 	    L = maps:get(label_name, St),
 	    Jump = sljit:emit_cmp(Compile, Type, Src1, Src1w, Src2, Src2w),
 	    add_target(L, Jump, St);
-
 	{?FMT_FCMP, [Type, Src1, Src1w, Src2, Src2w]} ->
 	    L = maps:get(label_name, St),
 	    Jump = sljit:emit_fcmp(Compile, Type, Src1, Src1w, Src2, Src2w),
@@ -486,7 +532,6 @@ slo_ins(Compile, Ins, St) ->
 	    ok = sljit:emit_mcall(Compile, Type, ArgTypes, 
 				  list_to_atom(Mod), list_to_atom(Fun)),
 	    St;
-
 	{?FMT_ENTER,[Options,ArgTypes,Scratches,Saved,LocalSize]} ->
 	    ok = sljit:emit_enter(Compile,Options,ArgTypes,Scratches,Saved,
 				  LocalSize),
@@ -501,13 +546,12 @@ slo_ins(Compile, Ins, St) ->
 	{?FMT_RETURN,[Op,Src,Srcw]} ->
 	    ok = sljit:emit_return(Compile, Op, Src, Srcw),
 	    St;
-	{?FMT_SIMD_OP2,[Op, DstVReg, Src1VReg, Src2, Src2w]} ->
-	    ok = sljit:emit_simd_op2(Compile, Op,DstVReg,
-				     Src1VReg, Src2, Src2w),
+	{?FMT_SIMD_OP2,[Op,DstVReg,Src1VReg,Src2,Src2w]} ->
+	    ok = sljit:emit_simd_op2(Compile,Op,DstVReg,Src1VReg,Src2,Src2w),
 	    St;
 	{?FMT_CONST_NAME, [Name]} ->  %% synthetic
 	    St#{const_name => Name};
-	{?FMT_CONST, [Op, Dst, Dstw, InitValue]} -> 
+	{?FMT_CONST, [Op,Dst,Dstw,InitValue]} -> 
 	    Name = maps:get(const_name, St),
 	    Const = sljit:emit_const(Compile, Op, Dst, Dstw, InitValue),
 	    ok = sljit:constant(Compile, Name, Const),
@@ -722,25 +766,89 @@ ins_set_flags([F|Fs]) ->
 	
 -spec cmp(sljit:compiler(), {cmp, Test::atom(), S1::imm()|reg(), S2::imm()|reg()}, St::map()) -> sljit:jump().
 cmp(Compile, {cmp, Test, S1, S2}, _St) ->
-    Type = 
-	case Test of
-	    %% unsigned compare
-	    equal -> ?SLJIT_EQUAL;
-	    not_equal -> ?SLJIT_NOT_EQUAL;
-	    less -> ?SLJIT_LESS;
-	    greater_equal -> ?SLJIT_GREATER_EQUAL;
-	    greater -> ?SLJIT_GREATER;
-	    less_equal -> ?SLJIT_LESS_EQUAL;
-	    %% signed compare
-	    sig_less -> ?SLJIT_SIG_LESS;
-	    sig_greater_equal -> ?SLJIT_SIG_GREATER_EQUAL;
-	    sig_greater -> ?SLJIT_SIG_GREATER;
-	    sig_less_equal -> ?SLJIT_SIG_LESS_EQUAL;
-	    _ when is_integer(Test) -> Test
-	end,
+    Type = enc_cmp(Test),
     {Src1, Src1w} = src(S1),
     {Src2, Src2w} = src(S2),
     emit(Compile, cmp, [Type, Src1, Src1w, Src2, Src2w]).
+
+enc_cmp(Test) ->
+    case Test of
+	%% unsigned compare
+	equal -> ?SLJIT_EQUAL;
+	not_equal -> ?SLJIT_NOT_EQUAL;
+	less -> ?SLJIT_LESS;
+	greater_equal -> ?SLJIT_GREATER_EQUAL;
+	greater -> ?SLJIT_GREATER;
+	less_equal -> ?SLJIT_LESS_EQUAL;
+	%% signed compare
+	sig_less -> ?SLJIT_SIG_LESS;
+	sig_greater_equal -> ?SLJIT_SIG_GREATER_EQUAL;
+	sig_greater -> ?SLJIT_SIG_GREATER;
+	sig_less_equal -> ?SLJIT_SIG_LESS_EQUAL;
+	_ when is_integer(Test) -> Test
+    end.
+
+dec_cmp(Test) ->
+    case Test band 16#ff of
+	%% unsigned compare
+	?SLJIT_EQUAL -> equal;
+	?SLJIT_NOT_EQUAL -> not_equal;
+	?SLJIT_LESS -> less;
+	?SLJIT_GREATER_EQUAL -> greater_equal;
+	?SLJIT_GREATER -> greater;
+	?SLJIT_LESS_EQUAL -> less_equal;
+	%% signed compare
+	?SLJIT_SIG_LESS -> sig_less;
+	?SLJIT_SIG_GREATER_EQUAL -> sig_greater_equal;
+	?SLJIT_SIG_GREATER -> sig_greater;
+	?SLJIT_SIG_LESS_EQUAL -> sig_less_equal;
+	_  -> Test
+    end.
+
+enc_status(Test) ->
+    case Test of
+	always -> ?SLJIT_JUMP;
+	equal -> ?SLJIT_EQUAL;
+	not_equal -> ?SLJIT_NOT_EQUAL;
+	less -> ?SLJIT_LESS;
+	less_equal -> ?SLJIT_LESS_EQUAL;
+	greater -> ?SLJIT_GREATER;
+	greater_equal -> ?SLJIT_GREATER_EQUAL;
+	overflow -> ?SLJIT_OVERFLOW;
+	not_overflow -> ?SLJIT_NOT_OVERFLOW;
+	carry -> ?SLJIT_CARRY;
+	not_carry -> ?SLJIT_NOT_CARRY;
+	_ when is_integer(Test) -> Test
+    end.
+
+dec_status(Test) ->
+    case Test band 16#ff of  %% fixme mask, how many bits?
+	?SLJIT_JUMP -> always;
+	?SLJIT_EQUAL -> equal;
+	?SLJIT_NOT_EQUAL -> not_equal;
+	?SLJIT_LESS -> less;
+	?SLJIT_LESS_EQUAL -> less_equal;
+	?SLJIT_GREATER -> greater;
+	?SLJIT_GREATER_EQUAL -> greater_equal;
+	?SLJIT_OVERFLOW -> overflow;
+	?SLJIT_NOT_OVERFLOW -> not_overflow;
+	?SLJIT_CARRY -> carry;
+	?SLJIT_NOT_CARRY -> not_carry;
+	_ -> Test
+    end.
+
+dec_jump_src(Type, St) when Type band ?SLJIT_REWRITABLE_JUMP =:= 
+			    ?SLJIT_REWRITABLE_JUMP ->
+    case maps:find(jump_name,St) of
+	{ok,Name} ->
+	    {[{from,Name}], maps:remove(jump_name, St)};
+	error ->
+	    {[], St}
+    end;
+dec_jump_src(_Type, St) ->
+    {[], St}.
+
+    
 
 add_target(L, Jump, St) ->
     case maps:find({label,L}, St) of
@@ -795,9 +903,11 @@ make_jump(Compile,Options,LabelName,St) ->
 
 %% process jump options
 make_jump_(Compile, [], JSrc, {T,{Src1,Src1w},{Src2,Src2w}}) ->
+    set_jump_name(Compile, JSrc),
     Jump = emit(Compile, cmp, [dynamic_jump(JSrc, T),Src1,Src1w,Src2,Src2w]),
     set_jump_src(Compile,JSrc,Jump);
 make_jump_(Compile, [], JSrc, T) when is_integer(T) ->
+    set_jump_name(Compile, JSrc),
     Jump = emit(Compile, jump, [dynamic_jump(JSrc, T)]),
     set_jump_src(Compile,JSrc,Jump);
 	    
@@ -806,40 +916,12 @@ make_jump_(Compile, [Option|Options], JSrc, Condition) ->
 	{from, JSrc1} when is_atom(JSrc1) ->
 	    make_jump_(Compile, Options, JSrc1, Condition);
 	{Test, S1, S2} ->
-	    T = case Test of
-		    %% unsigned compare
-		    equal -> ?SLJIT_EQUAL;
-		    not_equal -> ?SLJIT_NOT_EQUAL;
-		    less -> ?SLJIT_LESS;
-		    greater_equal -> ?SLJIT_GREATER_EQUAL;
-		    greater -> ?SLJIT_GREATER;
-		    less_equal -> ?SLJIT_LESS_EQUAL;
-		    %% signed compare
-		    sig_less -> ?SLJIT_SIG_LESS;
-		    sig_greater_equal -> ?SLJIT_SIG_GREATER_EQUAL;
-		    sig_greater -> ?SLJIT_SIG_GREATER;
-		    sig_less_equal -> ?SLJIT_SIG_LESS_EQUAL;
-		    _ when is_integer(Test) -> Test
-		end,
+	    T = enc_cmp(Test),
 	    make_jump_(Compile, Options, JSrc, {T,src(S1),src(S2)});
 	Test when is_atom(Test); is_integer(Test)  ->
-	    T = case Test of
-		    always -> ?SLJIT_JUMP;
-		    equal -> ?SLJIT_EQUAL;
-		    not_equal -> ?SLJIT_NOT_EQUAL;
-		    less -> ?SLJIT_LESS;
-		    less_equal -> ?SLJIT_LESS_EQUAL;
-		    greater -> ?SLJIT_GREATER;
-		    greater_equal -> ?SLJIT_GREATER_EQUAL;
-		    overflow -> ?SLJIT_OVERFLOW;
-		    not_overflow -> ?SLJIT_NOT_OVERFLOW;
-		    carry -> ?SLJIT_CARRY;
-		    not_carry -> ?SLJIT_NOT_CARRY;
-		    _ when is_integer(Test) -> Test
-		end,
+	    T = enc_status(Test),
 	    make_jump_(Compile, Options, JSrc, T)
     end.
-
 
 ins_ijump(Compile, {ijump, Options}, St) ->
     make_ijump_(Compile, Options, ?SLJIT_JUMP, undefined, undefined, 
@@ -879,24 +961,27 @@ make_ijump_(Compile, [Option|Options], T, Src, Dst, Def, JSrc, St) ->
 			Src, Dst, Def, JSrc, St)
     end.
 
+dec_ijump_type(?SLJIT_JUMP) -> jump;
+dec_ijump_type(?SLJIT_FAST_CALL) -> fast_call;
+dec_ijump_type(T) -> T.
+    
+
 dynamic_jump(undefined, Type) ->  Type;
 dynamic_jump(_JSrc, Type) -> Type bor ?SLJIT_REWRITABLE_JUMP.
 
-    
-
 %% save jump source, to be used with set_jump(JumpSrc, LabelName)
 %% at runtime.
+set_jump_name(_Compile,undefined) ->
+    ok;
+set_jump_name(Compile,JumpSrc) ->
+    ok = emit(Compile, jump_name, [JumpSrc]),
+    ok.
+
 set_jump_src(_Compile,undefined, Jump) ->
     Jump;
 set_jump_src(Compile,JumpSrc, Jump) ->
-    ok = emit(Compile, jump_name, [JumpSrc]),
     noemit(Compile, jump_addr, [JumpSrc, Jump]),
     Jump.
-
-
-
-
-
 
 ins_const(Compile, {const, Name, Type, D, InitValue}, St) ->
     Op = case Type of
@@ -1011,6 +1096,10 @@ ins_set_vflags([F|Fs]) ->
     case F of
 	float -> ?SLJIT_SIMD_FLOAT;
 	test -> ?SLJIT_SIMD_TEST;
+	reg_64 -> ?SLJIT_SIMD_REG_64;
+	reg_128 -> ?SLJIT_SIMD_REG_128;
+	reg_256 -> ?SLJIT_SIMD_REG_256;
+	reg_512 -> ?SLJIT_SIMD_REG_512;
 	u8 -> ?SLJIT_SIMD_ELEM_8;
 	u16 -> ?SLJIT_SIMD_ELEM_16;
 	u32 -> ?SLJIT_SIMD_ELEM_32;
@@ -1231,7 +1320,7 @@ dst({reg, R}) ->                             {reg(R), 0};
 dst(R) when is_atom(R) ->                    {reg(R), 0}.
 
 ddst(?SLJIT_MEM0(), I) -> {mem, I};
-ddst(R, I) when (R band ?SLJIT_MEM) =/= 0 ->
+ddst(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM ->
     R1 = R band 16#7f,
     R2 = (R bsr 8) band 16#ff,
     if R2 =/= 0, I =:= 0 -> {mem,dreg(R1),dreg(R2)};
@@ -1254,9 +1343,9 @@ src({reg, R}) ->                             {reg(R), 0};
 src(R) when is_atom(R) ->                    {reg(R), 0}.
 
 dsrc(?SLJIT_IMM, I) -> {imm,I};
-dsrc(R, I) when (R band ?SLJIT_MEM) =/= 0,
-		(R band ?SLJIT_IMM) =/= 0 -> {mem, I};
-dsrc(R, I) when (R band ?SLJIT_MEM) =/= 0 ->
+dsrc(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM,
+		(R band ?SLJIT_IMM) =:= ?SLJIT_IMM -> {mem, I};
+dsrc(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM ->
     R1 = R band 16#7f,
     R2 = (R bsr 8) band 16#ff,
     if R2 =/= 0, I =:= 0 -> {mem,dreg(R1),dreg(R2)};
@@ -1302,6 +1391,32 @@ fsrc({freg, R}) ->
     {freg(R), 0};
 fsrc(R) when is_atom(R) ->
     {freg(R), 0}.
+
+
+dfdst(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM,
+		 (R band ?SLJIT_IMM) =:= ?SLJIT_IMM -> {mem, I};
+dfdst(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM ->
+    R1 = R band 16#7f,
+    R2 = (R bsr 8) band 16#ff,
+    if R2 =/= 0, I =:= 0 -> {mem,dreg(R1),dreg(R2)};
+       R2 =/= 0 -> {mem,dreg(R1),dreg(R2),I};
+       I =:= 0 -> {mem,dreg(R1)};
+       true -> {mem,dreg(R1),I}
+    end;
+dfdst(R, 0) -> dfreg(R).
+
+dfsrc(?SLJIT_IMM, Imm) -> {imm,Imm};
+dfsrc(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM,
+		 (R band ?SLJIT_IMM) =:= ?SLJIT_IMM -> {mem, I};
+dfsrc(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM ->
+    R1 = R band 16#7f,
+    R2 = (R bsr 8) band 16#ff,
+    if R2 =/= 0, I =:= 0 -> {mem,dreg(R1),dreg(R2)};
+       R2 =/= 0 -> {mem,dreg(R1),dreg(R2),I};
+       I =:= 0 -> {mem,dreg(R1)};
+       true -> {mem,dreg(R1),I}
+    end;
+dfsrc(R, 0) -> dfreg(R).
 
 enter_options([]) -> 0;
 enter_options([{keep,N}|Opts]) ->
@@ -1423,6 +1538,12 @@ dreg(?SLJIT_R6) -> r6;
 dreg(?SLJIT_R7) -> r7; 
 dreg(?SLJIT_R8) -> r8;
 dreg(?SLJIT_R9) -> r9;
+dreg(?SLJIT_R(10)) -> r10;
+dreg(?SLJIT_R(11)) -> r11;
+dreg(?SLJIT_R(12)) -> r12;
+dreg(?SLJIT_R(13)) -> r13;
+dreg(?SLJIT_R(14)) -> r14;
+dreg(?SLJIT_R(15)) -> r15;
 dreg(R) -> {r, 9+(R-?SLJIT_R9)}.
 
 freg(fr0) -> ?SLJIT_FR0;
@@ -1442,6 +1563,7 @@ freg(fr13) -> ?SLJIT_FR(13);
 freg(fr14) -> ?SLJIT_FR(14);
 freg(fr15) -> ?SLJIT_FR(15);
 freg({fr,I}) -> ?SLJIT_FR(I);
+
 freg(fs0) -> ?SLJIT_FS0;
 freg(fs1) -> ?SLJIT_FS1;
 freg(fs2) -> ?SLJIT_FS2;
@@ -1466,11 +1588,17 @@ dfreg(?SLJIT_FR1) -> fr1;
 dfreg(?SLJIT_FR2) -> fr2; 
 dfreg(?SLJIT_FR3) -> fr3; 
 dfreg(?SLJIT_FR4) -> fr4; 
-dfreg(?SLJIT_FR5) -> fr5; 
-dfreg(?SLJIT_FR6) -> fr6; 
-dfreg(?SLJIT_FR7) -> fr7; 
+dfreg(?SLJIT_FR5) -> fr5;
+dfreg(?SLJIT_FR6) -> fr6;
+dfreg(?SLJIT_FR7) -> fr7;
 dfreg(?SLJIT_FR8) -> fr8;
 dfreg(?SLJIT_FR9) -> fr9;
+dfreg(?SLJIT_FR(10)) -> fr10;
+dfreg(?SLJIT_FR(11)) -> fr11;
+dfreg(?SLJIT_FR(12)) -> fr12; 
+dfreg(?SLJIT_FR(13)) -> fr13; 
+dfreg(?SLJIT_FR(14)) -> fr14; 
+dfreg(?SLJIT_FR(15)) -> fr15;
 dfreg(R) -> {fr, 9+(R-?SLJIT_FR9)}.
 
 
@@ -1484,7 +1612,14 @@ vreg(vr6) -> ?SLJIT_VR6;
 vreg(vr7) -> ?SLJIT_VR7;
 vreg(vr8) -> ?SLJIT_VR8;
 vreg(vr9) -> ?SLJIT_VR9;
+vreg(vr10) -> ?SLJIT_VR(10);
+vreg(vr11) -> ?SLJIT_VR(11);
+vreg(vr12) -> ?SLJIT_VR(12);
+vreg(vr13) -> ?SLJIT_VR(13);
+vreg(vr14) -> ?SLJIT_VR(14);
+vreg(vr15) -> ?SLJIT_VR(15);
 vreg({vr,I}) -> ?SLJIT_VR(I);
+
 vreg(vs0) -> ?SLJIT_VS0;
 vreg(vs1) -> ?SLJIT_VS1;
 vreg(vs2) -> ?SLJIT_VS2;
@@ -1495,7 +1630,32 @@ vreg(vs6) -> ?SLJIT_VS6;
 vreg(vs7) -> ?SLJIT_VS7;
 vreg(vs8) -> ?SLJIT_VS8;
 vreg(vs9) -> ?SLJIT_VS9;
+vreg(vs10) -> ?SLJIT_VS(10);
+vreg(vs11) -> ?SLJIT_VS(11);
+vreg(vs12) -> ?SLJIT_VS(12);
+vreg(vs13) -> ?SLJIT_VS(13);
+vreg(vs14) -> ?SLJIT_VS(14);
+vreg(vs15) -> ?SLJIT_VS(15);
 vreg({vs,I}) -> ?SLJIT_VS(I).
+
+%% decode reg
+dvreg(?SLJIT_VR0) -> vr0;
+dvreg(?SLJIT_VR1) -> vr1;
+dvreg(?SLJIT_VR2) -> vr2; 
+dvreg(?SLJIT_VR3) -> vr3; 
+dvreg(?SLJIT_VR4) -> vr4; 
+dvreg(?SLJIT_VR5) -> vr5; 
+dvreg(?SLJIT_VR6) -> vr6; 
+dvreg(?SLJIT_VR7) -> vr7; 
+dvreg(?SLJIT_VR8) -> vr8;
+dvreg(?SLJIT_VR9) -> vr9;
+dvreg(?SLJIT_VR(10)) -> vr10;
+dvreg(?SLJIT_VR(11)) -> vr11;
+dvreg(?SLJIT_VR(12)) -> vr12;
+dvreg(?SLJIT_VR(13)) -> vr13;
+dvreg(?SLJIT_VR(14)) -> vr14;
+dvreg(?SLJIT_VR(15)) -> vr15;
+dvreg(R) -> {r, 9+(R-?SLJIT_R9)}.
 
 %%
 %% Encode arguments using function signature

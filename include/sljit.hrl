@@ -434,4 +434,3 @@
 	?SIMD_OP2_NAME(shuffle, ?SLJIT_SIMD_OP2_SHUFFLE)).
 
 -endif.
-
