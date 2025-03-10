@@ -8,7 +8,7 @@
 -module(sljit_asm).
 
 -export([assemble/1, assemble/2]).
--export([disasm/1, disasm/2]).
+-export([disasm/1, disasm/2, disasm/3]).
 -export([load/1]).
 -export([save_as_bin/2]).
 -export([asm_ins_list/3, asm_ins/3]).
@@ -109,6 +109,8 @@
 -export_type([fop1/0, fop2/0, fop2r/0, op_fcopy/0, simd_op2/0]).
 -export_type([vec_reg/0, vec_saved_reg/0, vreg/0]).
 
+-define(test_flag(F, X), ((X) band (F)) =:= (F)).
+
 %% Assemble a file.asm into slo object binary
 -spec assemble(Filename::string()) -> {ok, binary()} | {error, term()}.
 assemble(Filename) ->
@@ -162,23 +164,24 @@ assemble(Filename, DstFilename) ->
     end.
 
 disasm(Filename) ->
-    disasm(Filename, undefined).
-
+    disasm(Filename, undefined, []).
 disasm(Filename, Output) ->
+    disasm(Filename, Output, ok).
+disasm(Filename, Output, Acc) ->
     case file:read_file(Filename) of
 	{ok, Bin} ->
 	    if 
 		Output =:= undefined ->
-		    disasm_object(Bin, #{}, Output, []);
+		    disasm_object(Bin, #{}, Output, Acc);
 		Output =:= standard_io;
 		Output =:= standard_error;
 		Output =:= user;
 		element(1, Output) =:= file_descriptor;
 		is_pid(Output) ->
-		    disasm_object(Bin, #{}, Output, ok);
+		    disasm_object(Bin, #{}, Output, Acc);
 		is_binary(Output); is_list(Output) ->
 		    {ok, Fd} = file:open(Output, [raw,read,write,trunc]),
-		    try disasm_object(Bin, #{}, Fd, ok) of
+		    try disasm_object(Bin, #{}, Fd, Acc) of
 			Ret -> Ret
 		    after
 			file:close(Fd)
@@ -336,24 +339,44 @@ disasm_ins(F, Args, St) ->
 	    {{jump, [T|Opts0], L}, St1};
 	{?FMT_FCMP, [Type, Src1, Src1w, Src2, Src2w]} ->
 	    L = maps:get(label_name, St),
-	    {{Type, {Src1,Src1w}, {Src2,Src2w}, L}, St};
-
+	    {{Type, dfsrc(Src1,Src1w), dfsrc(Src2,Src2w), L}, St};
+	
 	{?FMT_IJUMP,[Type, Src, Srcw]} ->
 	    {{ijump, dec_ijump_type(Type), dsrc(Src,Srcw)}, St};
-	{?FMT_MJUMP,[Type, Mod, Fun]} -> 
+	{?FMT_MJUMP,[Type, Mod, Fun]} ->
 	    {{mjump, Type, {list_to_atom(Mod), list_to_atom(Fun)}}, St};
 	{?FMT_CALL, [Type, ArgTypes]} ->
 	    L = maps:get(label_name, St),
-	    {{call, Type, ArgTypes, L}, St};
+	    CallType = decode_call_type(Type),
+	    Ret = decode_ret(ArgTypes),
+	    As  = decode_args(ArgTypes),
+	    {{call, CallType, Ret, As, L}, St};
 	{?FMT_ICALL, [Type,ArgTypes,Src,Srcw]} ->
-	    {{icall, Type, ArgTypes, dsrc(Src,Srcw)}, St};
+	    CallIType = decode_icall_type(Type),
+	    Ret = decode_ret(ArgTypes),
+	    As  = decode_args(ArgTypes),
+	    {{icall, CallIType, Ret, As, dsrc(Src,Srcw)}, St};
 	%% like ICALL but with mod:fun instead
 	{?FMT_MCALL, [Type,ArgTypes,Mod,Fun]} ->
-	    {{mcall, Type, ArgTypes, {list_to_atom(Mod), list_to_atom(Fun)}},St};
+	    ICallType = decode_icall_type(Type),
+	    Ret = decode_ret(ArgTypes),
+	    As  = decode_args(ArgTypes),
+	    MF = {list_to_atom(Mod), list_to_atom(Fun)},
+	    {{call, ICallType, Ret, As, MF},St};
 	{?FMT_ENTER,[Options,ArgTypes,Scratches,Saved,LocalSize]} ->
-	    {{enter,Options,ArgTypes,Scratches,Saved,LocalSize}, St};
+	    Ret = decode_ret(ArgTypes),
+	    As  = decode_args(ArgTypes),
+	    Options1 = decode_enter_options(Options),
+	    Scratches1 = decode_enter_regs(Scratches),
+	    Saved1 = decode_enter_regs(Saved),
+	    {{enter,Options1,Ret,As,Scratches1,Saved1,LocalSize}, St};
 	{?FMT_SET_CONTEXT,[Options,ArgTypes,Scratches,Saved,LocalSize]} ->
-	    {{set_context,Options,ArgTypes,Scratches,Saved,LocalSize}, St};
+	    Ret = decode_ret(ArgTypes),
+	    As  = decode_args(ArgTypes),
+	    Options1 = decode_enter_options(Options),
+	    Scratches1 = decode_enter_regs(Scratches),
+	    Saved1 = decode_enter_regs(Saved),
+	    {{set_context,Options1,Ret,As,Scratches1,Saved1,LocalSize}, St};
 	{?FMT_RETURN_VOID,[]} ->
 	    {{return}, St};
 	{?FMT_RETURN,[Op,Src,Srcw]} ->
@@ -1000,7 +1023,7 @@ ins_const(Compile, {const, Name, Type, D, InitValue}, St) ->
     St#{ constants => [{Name, Const} | CList] }.
 
 ins_call(Compile, {call, Type, Ret, Args, {Mod,Fun}}, _St) ->
-    Type1 = encode_icall_type(Type),
+    Type1 = encode_icall_type(Type),  %% uses icall !!
     RetType = encode_ret(Ret),
     ArgTypes = RetType bor encode_args(Args),
     ok = emit(Compile, mcall, [Type1, ArgTypes, Mod, Fun]);
@@ -1021,13 +1044,11 @@ ins_icall(Compile, {icall, Type, Ret, Args, S}, St) ->
     ok = emit(Compile, icall, [Type1, ArgTypes, Src, Srcw]),
     St.
 
-
-
 ins_enter(Compile, {enter, Options0, RetType0, ArgTypes0, 
 		    Scratches0, Saved0, LocalSize}, St) ->
-    Options = enter_options(Options0),
-    Scratches = enter_regs(Scratches0),
-    Saved = enter_regs(Saved0),
+    Options = encode_enter_options(Options0),
+    Scratches = encode_enter_regs(Scratches0),
+    Saved = encode_enter_regs(Saved0),
     RetType = encode_ret(RetType0),
     ArgTypes = RetType bor encode_args(ArgTypes0),
     ok = emit(Compile, enter,
@@ -1035,9 +1056,9 @@ ins_enter(Compile, {enter, Options0, RetType0, ArgTypes0,
     St;
 ins_enter(Compile, {set_context, Options0, RetType0, ArgTypes0, 
 		    Scratches0, Saved0, LocalSize}, St) ->
-    Options = enter_options(Options0),
-    Scratches = enter_regs(Scratches0),
-    Saved = enter_regs(Saved0),
+    Options = encode_enter_options(Options0),
+    Scratches = encode_enter_regs(Scratches0),
+    Saved = encode_enter_regs(Saved0),
     RetType = encode_ret(RetType0),
     ArgTypes = RetType bor encode_args(ArgTypes0),
     ok = emit(Compile, set_context, 
@@ -1330,7 +1351,6 @@ ddst(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM ->
     end;
 ddst(R, 0) -> dreg(R).
 
-
 -spec src(imm()|mem()|reg()|integer()) -> {sljit:op_src(), integer()}.
 src(Imm) when is_integer(Imm) ->             {?SLJIT_IMM, Imm};
 src({imm,Imm}) when is_integer(Imm) ->       {?SLJIT_IMM, Imm};
@@ -1342,7 +1362,7 @@ src({mem,R1,R2,Imm}) when is_integer(Imm) -> {?SLJIT_MEM2(reg(R1),reg(R2)),Imm};
 src({reg, R}) ->                             {reg(R), 0};
 src(R) when is_atom(R) ->                    {reg(R), 0}.
 
-dsrc(?SLJIT_IMM, I) -> {imm,I};
+dsrc(?SLJIT_IMM, I) -> I;  %% looks beter than {imm,I}?
 dsrc(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM,
 		(R band ?SLJIT_IMM) =:= ?SLJIT_IMM -> {mem, I};
 dsrc(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM ->
@@ -1354,7 +1374,6 @@ dsrc(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM ->
        true -> {mem,dreg(R1),I}
     end;
 dsrc(R, 0) -> dreg(R).
-
 
 -spec fdst(imm()|mem()|freg()) -> {sljit:op_src(), integer()}.
 fdst({mem,Imm}) when is_integer(Imm) ->
@@ -1418,16 +1437,40 @@ dfsrc(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM ->
     end;
 dfsrc(R, 0) -> dfreg(R).
 
-enter_options([]) -> 0;
-enter_options([{keep,N}|Opts]) ->
-    ?SLJIT_ENTER_KEEP(N) bor enter_options(Opts);
-enter_options([reg_arg |Opts]) ->
-    ?SLJIT_ENTER_REG_ARG bor enter_options(Opts).
+encode_enter_options([]) -> 0;
+encode_enter_options([{keep,N}|Opts]) when N >= 1, N =< 3 ->
+    ?SLJIT_ENTER_KEEP(N) bor encode_enter_options(Opts);
+encode_enter_options([reg_arg |Opts]) ->
+    ?SLJIT_ENTER_REG_ARG bor encode_enter_options(Opts).
 
-enter_regs([]) -> 0;     
-enter_regs([{reg,R}|Regs]) ->  R bor enter_regs(Regs);
-enter_regs([{freg,R}|Regs]) -> ?SLJIT_ENTER_FLOAT(R) bor enter_regs(Regs);
-enter_regs([{vreg,R}|Regs]) -> ?SLJIT_ENTER_VECTOR(R) bor enter_regs(Regs).
+decode_enter_options(Type) ->
+    case Type band 3 of
+	0 -> [];
+	1 -> [{keep,1}];
+	2 -> [{keep,2}];
+	3 -> [{keep,3}]
+    end ++ 
+	if ?test_flag(?SLJIT_ENTER_REG_ARG,Type) ->
+		[reg_arg];
+	   true ->
+		[]
+	end.
+
+encode_enter_regs([]) -> 0;     
+encode_enter_regs([{reg,R}|Regs]) ->
+    R bor encode_enter_regs(Regs);
+encode_enter_regs([{freg,R}|Regs]) -> 
+    ?SLJIT_ENTER_FLOAT(R) bor encode_enter_regs(Regs);
+encode_enter_regs([{vreg,R}|Regs]) ->
+    ?SLJIT_ENTER_VECTOR(R) bor encode_enter_regs(Regs).
+
+decode_enter_regs(Regs) ->
+    R = Regs band 16#ff,
+    F = (Regs bsr 8) band 16#ff,
+    V = (Regs bsr 16) band 16#ff,
+    if R > 0 -> [{reg,R}]; true -> [] end ++
+    if F > 0 -> [{freg,F}]; true -> [] end ++
+    if V > 0 -> [{vreg,V}]; true -> [] end.
 
 encode_ret(Ret) ->
     R = case Ret of
@@ -1441,6 +1484,17 @@ encode_ret(Ret) ->
 	    _ when is_integer(Ret) -> Ret
 	end,
     ?SLJIT_ARG_RETURN(R).
+
+decode_ret(Type) ->
+    case Type band 16#f of
+	?SLJIT_ARG_TYPE_RET_VOID -> void;
+	?SLJIT_ARG_TYPE_W -> word;
+	?SLJIT_ARG_TYPE_32 -> word32;
+	?SLJIT_ARG_TYPE_P  -> ptr;
+	?SLJIT_ARG_TYPE_F64 -> f64;
+	?SLJIT_ARG_TYPE_F32 -> f32;
+	?SLJIT_ARG_TYPE_TERM -> term
+    end.
     
 %% enter argtypes
 encode_args(As) ->
@@ -1458,9 +1512,25 @@ encode_arg(Arg) ->
 	ptr -> ?SLJIT_ARG_TYPE_P_R;
 	f64 -> ?SLJIT_ARG_TYPE_F64;
 	f32 -> ?SLJIT_ARG_TYPE_F32;
-	term -> ?SLJIT_ARG_TYPE_TERM_R; %% transfered as word
+	term -> ?SLJIT_ARG_TYPE_TERM_R;
 	_ when is_integer(Arg) -> Arg
     end.
+
+decode_args(Type) ->
+    decode_args(Type bsr 4, []).
+
+decode_args(0, As) -> 
+    lists:reverse(As);
+decode_args(Type, As) ->
+    A = case Type band 16#f of
+	    ?SLJIT_ARG_TYPE_W_R -> word;
+	    ?SLJIT_ARG_TYPE_32_R -> word32;
+	    ?SLJIT_ARG_TYPE_P_R -> ptr;
+	    ?SLJIT_ARG_TYPE_F64 -> f64;
+	    ?SLJIT_ARG_TYPE_F32 -> f32;
+	    ?SLJIT_ARG_TYPE_TERM_R -> term
+	end,
+    decode_args(Type bsr 4, [A|As]).
 
 %% ICALL type
 encode_icall_type([call|Ts]) ->
@@ -1477,20 +1547,51 @@ encode_icall_type_([call_return|Ts]) ->
 encode_icall_type_([]) ->
     0.
 
+decode_icall_type(Type) ->
+    case Type band 16#ff of
+	?SLJIT_CALL -> [call|decode_icall_flags(Type)];
+	?SLJIT_CALL_REG_ARG -> [call_reg_arg|decode_icall_flags(Type)];
+	_ -> decode_icall_flags(Type)
+    end.
+
+decode_icall_flags(Type) when Type band ?SLJIT_CALL_RETURN =:= 
+			      ?SLJIT_CALL_RETURN ->
+    [call_return];
+decode_icall_flags(_) ->
+    [].
+
 encode_call_type([call|Ts]) ->
-    ?SLJIT_CALL bor encode_call_type_(Ts);
+    ?SLJIT_CALL bor encode_call_type_flags(Ts);
 encode_call_type([call_reg_arg|Ts]) -> 
-    ?SLJIT_CALL_REG_ARG bor encode_call_type_(Ts);
+    ?SLJIT_CALL_REG_ARG bor encode_call_type_flags(Ts);
 encode_call_type(Type) when is_integer(Type) ->
     Type.
 
-encode_call_type_([rewriteable_jump|Ts]) ->
-    ?SLJIT_REWRITABLE_JUMP bor encode_call_type_(Ts);
-encode_call_type_([call_return|Ts]) ->
-    ?SLJIT_CALL_RETURN bor encode_call_type_(Ts);
-encode_call_type_([]) ->
+encode_call_type_flags([rewriteable_jump|Ts]) ->
+    ?SLJIT_REWRITABLE_JUMP bor encode_call_type_flags(Ts);
+encode_call_type_flags([call_return|Ts]) ->
+    ?SLJIT_CALL_RETURN bor encode_call_type_flags(Ts);
+encode_call_type_flags([]) ->
     0.
 
+decode_call_type(Type) ->
+    case Type band 16#ff of
+	?SLJIT_CALL -> [call|decode_call_type_flags(Type)];
+	?SLJIT_CALL_REG_ARG -> [call_reg_arg|decode_call_type_flags(Type)];
+	_ -> decode_call_type_flags(Type)
+    end.
+
+decode_call_type_flags(Type) ->
+    if Type band ?SLJIT_REWRITABLE_JUMP =:= ?SLJIT_REWRITABLE_JUMP ->
+	    [rewriteable_jump];
+       true ->
+	    []
+    end ++
+    if Type band ?SLJIT_CALL_RETURN =:= ?SLJIT_CALL_RETURN ->
+	    [call_return];
+       true ->
+	    []
+    end.
 
 reg(r0) -> ?SLJIT_R0;
 reg(r1) -> ?SLJIT_R1;

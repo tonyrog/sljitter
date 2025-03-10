@@ -156,9 +156,9 @@
 -define(SLJIT_HAS_LASX,                 201).
 
 
--define(SLJIT_ENTER_KEEP(N),		(N)).
+-define(SLJIT_ENTER_KEEP(N),		(N)).  %% 1..3
 -define(SLJIT_ENTER_REG_ARG,		16#00000004).
--define(SLJIT_ENTER_USE_VEX,		1600010000).
+-define(SLJIT_ENTER_USE_VEX,		16#00010000).
 
 -define(SLJIT_ENTER_FLOAT(Regs),	((Regs) bsl 8)).
 -define(SLJIT_ENTER_VECTOR(Regs),	((Regs) bsl 16)).
