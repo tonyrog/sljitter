@@ -284,6 +284,7 @@
 %% op in emit_mov_addr
 -define(SLJIT_MOV_ADDR,  0).
 -define(SLJIT_MOV_ABS_ADDR, 1).
+-define(SLJIT_ADD_ABS_ADDR, 2).
 
 -define(OP0_LIST,
 	?OP0_NAME(breakpoint, ?SLJIT_BREAKPOINT)
@@ -383,9 +384,9 @@
 	?OP_SRC_NAME(prefetch_l3, ?SLJIT_PREFETCH_L3)
 	?OP_SRC_NAME(prefetch_once, ?SLJIT_PREFETCH_ONCE)).
 
--define(OP_SRC_DST_LIST,
-	?OP_DSR_NAME(fast_enter, ?SLJIT_FAST_ENTER)
-	?OP_DSR_NAME(get_return_address, ?SLJIT_GET_RETURN_ADDRESS)).
+-define(OP_DST_LIST,
+	?OP_DST_NAME(fast_enter, ?SLJIT_FAST_ENTER)
+	?OP_DST_NAME(get_return_address, ?SLJIT_GET_RETURN_ADDRESS)).
 
 -define(FOP1_LIST,
 	?FOP1_NAME(mov_f64, ?SLJIT_MOV_F64)

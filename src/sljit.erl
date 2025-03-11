@@ -61,7 +61,7 @@
 -export([get_label_addr/1]).
 -export([emit_const/5]).
 -export([set_constant/2, set_constant/3]).
--export([emit_mov_addr/4]).
+-export([emit_op_addr/4]).
 -export([set_jump/2, set_jump/3]).
 
 %% -export([emit_select/6]).
@@ -416,7 +416,7 @@ get_label_addr(_Label) ->
 %% SLJIT_MOV32_U8
 -spec emit_const(compiler(), Op::integer(),
 		 Dst::integer(), Dstw::integer(), 
-		 InitValue::integer()) -> const().
+		 InitValue::integer()|atom()) -> const().
 emit_const(_Compiler, _Op, _Dst, _DstW, _InitValue) -> 
     ?nif_stub().
 
@@ -432,11 +432,11 @@ set_constant(_CodeOrMod, _Name, _NewConstant) ->
 %% op is one off
 %% SLJIT_MOV_ADDR     -- The address is suitable for jump/call target.
 %% SLJIT_MOV_ABS_ADDR -- The address is suitable for reading memory.
--spec emit_mov_addr(Compiler::compiler(),  Op::integer(),
-		    Dst::integer(), Dstw::integer()) ->
+-spec emit_op_addr(Compiler::compiler(),  Op::integer(),
+		   Dst::integer(), Dstw::integer()) ->
 	  jump().
 
-emit_mov_addr(_Compiler, _Op, _Dst, _Dstw) ->
+emit_op_addr(_Compiler, _Op, _Dst, _Dstw) ->
     ?nif_stub().
 
 -spec set_jump({CodeOrMod::code()|atom(), Name::atom()}, NewTarget::atom()) ->

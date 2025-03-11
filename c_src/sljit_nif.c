@@ -76,7 +76,7 @@
     NIF("get_label_addr", 1, nif_get_label_addr) \
     NIF("emit_const", 5, nif_emit_const) \
     NIF("set_constant", 3, nif_set_constant) \
-    NIF("emit_mov_addr", 4, nif_emit_mov_addr) \
+    NIF("emit_op_addr", 4, nif_emit_op_addr) \
     NIF("set_jump", 3, nif_set_jump)
     
 
@@ -479,8 +479,10 @@ static addr_entry_t* add_addr(addr_entry_t** listp, ERL_NIF_TERM name,
 			      addr_type_t type, void* res, sljit_uw addr)
 				 
 {
-    addr_entry_t* ap;    
-    if (lookup_addr(*listp, name, type) != NULL)
+    addr_entry_t* ap;
+    if ((name == ATOM(undefined)) && (type == ADDR_CONST))
+	;
+    else if (lookup_addr(*listp, name, type) != NULL)
 	return NULL;
     ap = create_addr(name, type, res, addr);
     ap->next = *listp;
@@ -819,7 +821,9 @@ ERL_NIF_TERM nif_generate_code(ErlNifEnv* env, int argc,
     while(ap != NULL) {
 	if ((ap->type == ADDR_CONST) && (ap->cnst->def != 0)) {
 	    addr_entry_t* bp;
+	    enif_fprintf(stderr, "resolve const label %T\r\n", ap->cnst->def);
 	    if ((bp = lookup_addr(crp->addr_list, ap->cnst->def, ADDR_LABEL)) != NULL) {
+		enif_fprintf(stderr, "  address = %p\r\n", bp->addr);
 		sljit_set_const(ap->addr, ap->cnst->op, bp->addr, crp->exec_offset);
 	    }
 	}
@@ -1972,7 +1976,7 @@ ERL_NIF_TERM nif_emit_const(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     return term;
 }
 
-ERL_NIF_TERM nif_emit_mov_addr(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+ERL_NIF_TERM nif_emit_op_addr(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
     UNUSED(argc);   
     compiler_t* cp;
@@ -1991,7 +1995,7 @@ ERL_NIF_TERM nif_emit_mov_addr(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
     if (!get_sw(env, argv[3], &dstw))
 	return EXCP_BADARG_N(env, 3, "not an integer");    
 
-    if ((jump = sljit_emit_mov_addr(cp->compiler, op, dst, dstw)) == NULL)
+    if ((jump = sljit_emit_op_addr(cp->compiler, op, dst, dstw)) == NULL)
 	return nif_return(env, SLJIT_ERR_ALLOC_FAILED);
     jmp = enif_alloc_resource(jump_res, sizeof(jump_t));
     jmp->jump = jump;

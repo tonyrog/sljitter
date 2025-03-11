@@ -230,6 +230,12 @@ print_object(Ins, Fd) ->
 -undef(OP2_NAME).
 -define(OP2_NAME(I, N), N -> I; ).
 
+-undef(OP_SRC_NAME).
+-define(OP_SRC_NAME(I, N), N -> I; ).
+
+-undef(OP_DST_NAME).
+-define(OP_DST_NAME(I, N), N -> I; ).
+
 -undef(FOP1_NAME).
 -define(FOP1_NAME(I, N), N -> I; ).
 
@@ -299,8 +305,18 @@ disasm_ins(F, Args, St) ->
 		       _ -> throw({error, {unknown_op, Op}})
 		   end,
 	    {{Name,dreg(Dst),dreg(Src1),dreg(Src2),dsrc(Src3,Src3w)},St};
-	%% ?FMT_OP_src -> ins_op_src(Compile, Instruction, St);
-	%% ?FMT_OP_dst -> ins_op_dst(Compile, Instruction, St);
+	{?FMT_OP_SRC, [Op,Src,Srcw]} ->
+	    Name = case Op of
+		       ?OP_SRC_LIST
+		       _ -> throw({error, {unknown_op, Op}})
+		   end,
+	    {{Name,dsrc(Src,Srcw)},St};
+	{?FMT_OP_DST, [Op,Dst,Dstw]} ->
+	    Name = case Op of
+		       ?OP_DST_LIST
+		       _ -> throw({error, {unknown_op, Op}})
+		   end,
+	    {{Name,ddst(Dst,Dstw)},St};
 	{?FMT_FOP1, [Op, Dst, Dstw, Src, Srcw]} ->
 	    Name = case Op of
 		       ?FOP1_LIST
@@ -342,7 +358,7 @@ disasm_ins(F, Args, St) ->
 	    {{Type, dfsrc(Src1,Src1w), dfsrc(Src2,Src2w), L}, St};
 	
 	{?FMT_IJUMP,[Type, Src, Srcw]} ->
-	    {{ijump, dec_ijump_type(Type), dsrc(Src,Srcw)}, St};
+	    {{ijump, decode_ijump_type(Type), dsrc(Src,Srcw)}, St};
 	{?FMT_MJUMP,[Type, Mod, Fun]} ->
 	    {{mjump, Type, {list_to_atom(Mod), list_to_atom(Fun)}}, St};
 	{?FMT_CALL, [Type, ArgTypes]} ->
@@ -393,11 +409,16 @@ disasm_ins(F, Args, St) ->
 	    Name = maps:get(const_name, St),
 	    St1 = maps:remove(const_name, St),
 	    {{const, Name, Op, {Dst, Dstw}, InitValue}, St1};
-	{?FMT_MOV_ADDR, [Op,Dst,Dstw]} ->
+	{?FMT_OP_ADDR, [Op,Dst,Dstw]} ->
 	    L0 = maps:get(label_name, St, undefined),
 	    Jsrc = maps:get(jump_name, St, undefined),
 	    St1 = maps:remove(jump_name, St),
-	    {{mov_addr, Jsrc, Op, ddst(Dst,Dstw), L0}, St1};
+	    Op1 = case Op of
+		      ?SLJIT_MOV_ADDR -> mov_addr;
+		      ?SLJIT_MOV_ABS_ADDR -> mov_abs_addr;
+		      ?SLJIT_ADD_ABS_ADDR -> add_abs_addr
+		  end,
+	    {{op_addr, Jsrc, Op1, ddst(Dst,Dstw), L0}, St1};
 	{Fmt,_Args} ->
 	    throw({error, {unknown_format, Fmt}})
     end.	
@@ -501,8 +522,12 @@ slo_ins(Compile, Ins, St) ->
 	{?FMT_SI, [Op, Dst, Src1, Src2, Src3, Src3w]} ->
 	    ok = sljit:emit_shift_into(Compile, Op, Dst, Src1,Src2, Src3,Src3w),
 	    St;       
-	%% ?FMT_OP_src -> ins_op_src(Compile, Instruction, St);
-	%% ?FMT_OP_dst -> ins_op_dst(Compile, Instruction, St);
+	{?FMT_OP_SRC, [Op, Src, Srcw]} ->
+	    ok = sljit:emit_op_src(Compile, Op, Src, Srcw),
+	    St;
+	{?FMT_OP_DST, [Op, Dst, Dstw]} ->
+	    ok = sljit:emit_op_dst(Compile, Op, Dst, Dstw),
+	    St;	    
 	{?FMT_FOP1, [Op, Dst, Dstw, Src, Srcw]} ->
 	    ok = sljit:emit_fop1(Compile, Op, Dst, Dstw, Src, Srcw),
 	    St;
@@ -581,8 +606,8 @@ slo_ins(Compile, Ins, St) ->
 	    CList = maps:get(constants, St, []),
 	    St#{ constants => [{Name, Const} | CList], 
 		 const_name => undefined };
-	{?FMT_MOV_ADDR, [Op,Dst,Dstw]} ->
-	    Jump = sljit:emit_mov_addr(Compile, Op, Dst, Dstw),
+	{?FMT_OP_ADDR, [Op,Dst,Dstw]} ->
+	    Jump = sljit:emit_op_addr(Compile, Op, Dst, Dstw),
 	    St1 = case maps:get(label_name, St, undefined) of
 		      undefined -> St;
 		      L0 ->
@@ -607,7 +632,7 @@ asm_ins_list(_, [], St) ->
 
 asm_ins(Compile, Instruction, St) ->
     Fmt = fmt(Instruction),
-    ?dbg("ASM (fmt=~w) ~p~n", [Fmt, Instruction]),
+    ?dbg("ASM (fmt=~w) ~p, st=~p~n", [Fmt, Instruction,St]),
     case Fmt of
 	?FMT_MODULE ->
 	    {module, M} = Instruction,
@@ -623,8 +648,8 @@ asm_ins(Compile, Instruction, St) ->
 	%% ?FMT_OP2U -> ins_op2u(Compile, Instruction, St);
 	%% ?FMT_OP2R -> ins_op2r(Compile, Instruction, St);
 	%% ?FMT_SI -> ins_si(Compile, Instruction, St);
-	%% ?FMT_OP_src -> ins_op_src(Compile, Instruction, St);
-	%% ?FMT_OP_dst -> ins_op_dst(Compile, Instruction, St);
+	?FMT_OP_SRC -> ins_op_src(Compile, Instruction, St);
+	?FMT_OP_DST -> ins_op_dst(Compile, Instruction, St);
 	?FMT_FOP1 -> ins_fop1(Compile, Instruction, St);
 	?FMT_FOP2 -> ins_fop2(Compile, Instruction, St);
 	%%?FMT_FOP2R -> ins_fop2r(Compile, Instruction, St);
@@ -643,6 +668,7 @@ asm_ins(Compile, Instruction, St) ->
 	?FMT_RETURN -> ins_return(Compile, Instruction, St);
 	?FMT_SIMD_OP2 -> ins_simd_op2(Compile, Instruction, St);
 	?FMT_CONST -> ins_const(Compile, Instruction, St);
+	?FMT_OP_ADDR -> ins_op_addr(Compile,  Instruction, St);
 	Fmt -> throw({error, {unknown_format, Fmt}})
     end.
 
@@ -659,6 +685,31 @@ ins_op0(Compile, Ins, St) ->
     ok = emit(Compile, op0, [Op]),
     St.
 
+-undef(OP_SRC_NAME).
+-define(OP_SRC_NAME(I, N), I -> N; ).
+
+ins_op_src(Compile, {Ins, S}, St) ->
+    Op = case Ins of
+	     ?OP_SRC_LIST
+	     _ -> throw({error, {unknown_op_src, Ins}})
+	 end,
+    {Src, Srcw} = src(S),
+    ok = emit(Compile, op_src, [Op, Src, Srcw]),
+    St.
+
+-undef(OP_DST_NAME).
+-define(OP_DST_NAME(I, N), I -> N; ).
+
+ins_op_dst(Compile, {Ins, D}, St) ->
+    Op = case Ins of
+	     ?OP_DST_LIST
+	     _ -> throw({error, {unknown_op_dst, Ins}})
+	 end,
+    {Dst, Dstw} = dst(D),
+    ok = emit(Compile, op_dst, [Op, Dst, Dstw]),
+    St.
+
+
 -undef(OP1_NAME).
 -define(OP1_NAME(I, N), I -> N; ).
 
@@ -671,6 +722,8 @@ ins_op1(Compile, {Ins, D, S}, St) ->
     {Src, Srcw} = src(S),
     ok = emit(Compile, op1, [Op, Dst, Dstw, Src, Srcw]),
     St.
+
+
 
 -undef(OP2_NAME).
 -define(OP2_NAME(I, N), I -> N; ).
@@ -956,7 +1009,7 @@ make_ijump_(Compile, [], Type, _Src, {Dst,Dstw}, Def, JSrc, St) ->
 	    ok = emit(Compile, const_name, [JSrc])
     end,
     Const = emit(Compile, const, [?SLJIT_MOV, Dst, Dstw, Def]),
-    noemit(Compile, constant, [JSrc, Const]),
+    noemit(Compile, constant, [JSrc, Const]), %% jsrc=undefined => anonymous
     ok = emit(Compile, ijump, [Type, Dst, Dstw]),
     St;
 make_ijump_(Compile, [], Type, {Src,Srcw}, _Dst, _Def, _JSrc, St) ->
@@ -984,9 +1037,9 @@ make_ijump_(Compile, [Option|Options], T, Src, Dst, Def, JSrc, St) ->
 			Src, Dst, Def, JSrc, St)
     end.
 
-dec_ijump_type(?SLJIT_JUMP) -> jump;
-dec_ijump_type(?SLJIT_FAST_CALL) -> fast_call;
-dec_ijump_type(T) -> T.
+decode_ijump_type(?SLJIT_JUMP) -> jump;
+decode_ijump_type(?SLJIT_FAST_CALL) -> fast_call;
+decode_ijump_type(T) -> T.
     
 
 dynamic_jump(undefined, Type) ->  Type;
@@ -1006,6 +1059,19 @@ set_jump_src(Compile,JumpSrc, Jump) ->
     noemit(Compile, jump_addr, [JumpSrc, Jump]),
     Jump.
 
+ins_op_addr(Compile, {op_addr, JSrc, OpName, D, L}, St) ->
+    ok = emit(Compile, label_name, [L]),
+    set_jump_name(Compile, JSrc),
+    {Dst, Dstw} = dst(D),
+    Op = case OpName of
+	     mov_addr -> ?SLJIT_MOV_ADDR;
+	     mov_abs_addr -> ?SLJIT_MOV_ABS_ADDR;
+	     add_abs_addr -> ?SLJIT_ADD_ABS_ADDR
+	 end,
+    Jump = emit(Compile, op_addr, [Op, Dst, Dstw]),
+    set_jump_src(Compile,JSrc,Jump),
+    add_target(L, Jump, St).
+
 ins_const(Compile, {const, Name, Type, D, InitValue}, St) ->
     Op = case Type of
 	     mov -> ?SLJIT_MOV;
@@ -1022,12 +1088,12 @@ ins_const(Compile, {const, Name, Type, D, InitValue}, St) ->
     CList = maps:get(constants, St, []),
     St#{ constants => [{Name, Const} | CList] }.
 
-ins_call(Compile, {call, Type, Ret, Args, {Mod,Fun}}, _St) ->
+ins_call(Compile, {call, Type, Ret, Args, {Mod,Fun}}, St) ->
     Type1 = encode_icall_type(Type),  %% uses icall !!
     RetType = encode_ret(Ret),
     ArgTypes = RetType bor encode_args(Args),
-    ok = emit(Compile, mcall, [Type1, ArgTypes, Mod, Fun]);
-
+    ok = emit(Compile, mcall, [Type1, ArgTypes, Mod, Fun]),
+    St;
 ins_call(Compile, {call, Type, Ret, Args, L0}, St) ->
     ok = emit(Compile, label_name, [L0]),
     Type1 = encode_call_type(Type),
@@ -1181,6 +1247,8 @@ emit_func(op1) -> emit_op1;
 emit_func(op2) -> emit_op2;
 emit_func(op2u) -> emit_op2u;
 emit_func(op2r) -> emit_op2r;
+emit_func(op_src) -> emit_op_src;
+emit_func(op_dst) -> emit_op_dst;
 emit_func(shift_into) -> emit_shift_into;
 emit_func(fop1) -> emit_fop1;
 emit_func(fop2) -> emit_fop2;
@@ -1208,13 +1276,19 @@ emit_func(const) -> emit_const;
 emit_func(const_name) -> const_name;
 emit_func(module) -> module;
 emit_func(function) -> function;
-emit_func(mov_addr) -> emit_mov_addr;
+emit_func(op_addr) -> emit_op_addr;
 emit_func(jump_addr) -> jump_addr;
 emit_func(label_addr) -> label_addr.
 
 
 -undef(OP0_NAME).
 -define(OP0_NAME(I, N), I -> ?FMT_OP0; ).
+
+-undef(OP_SRC_NAME).
+-define(OP_SRC_NAME(I, N), I -> ?FMT_OP_SRC; ).
+
+-undef(OP_DST_NAME).
+-define(OP_DST_NAME(I, N), I -> ?FMT_OP_DST; ).
 
 -undef(OP1_NAME).
 -define(OP1_NAME(I, N), I -> ?FMT_OP1; ).
@@ -1243,6 +1317,8 @@ emit_func(label_addr) -> label_addr.
 fmt(Ins) ->
     case opcode(Ins) of
 	?OP0_LIST
+	?OP_SRC_LIST
+	?OP_DST_LIST
 	?OP1_LIST
 	?OP2_LIST
 	?FOP1_LIST
@@ -1296,6 +1372,8 @@ fmt_signature(Fmt) ->
 	?FMT_OP2 -> "uuiuiui";
 	?FMT_OP2U -> "uuiui";
 	?FMT_OP2R -> "uuuiui";
+	?FMT_OP_SRC -> "uui";
+	?FMT_OP_DST -> "uui";
 	?FMT_SI -> "uuuuui";
 	?FMT_FOP1 -> "uuiui";
 	?FMT_FOP2 -> "uuiuiui";
@@ -1322,7 +1400,7 @@ fmt_signature(Fmt) ->
 	?FMT_IJUMP -> "uui";
 	?FMT_CALL -> "uu";
 	?FMT_CONST -> "uuiv";
-	?FMT_MOV_ADDR -> "uui"
+	?FMT_OP_ADDR -> "uui"
     end.
 
 
@@ -1626,9 +1704,11 @@ reg(s12) -> ?SLJIT_S(12);
 reg(s13) -> ?SLJIT_S(13);
 reg(s14) -> ?SLJIT_S(14);
 reg(s15) -> ?SLJIT_S(15);
-reg({s,I}) -> ?SLJIT_S(I).
+reg({s,I}) -> ?SLJIT_S(I);
+reg(sp) -> ?SLJIT_SP.
 
 %% decode reg
+dreg(?SLJIT_SP) -> sp;
 dreg(?SLJIT_R0) -> r0;
 dreg(?SLJIT_R1) -> r1;
 dreg(?SLJIT_R2) -> r2; 

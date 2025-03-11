@@ -38,7 +38,7 @@
 -define(FMT_MCALL,       27).  %% module:function call
 -define(FMT_MJUMP,       28).  %% module:name jump
 -define(FMT_CONST,       29).
--define(FMT_MOV_ADDR,    30).
+-define(FMT_OP_ADDR,     30).
 
 %% synthetic formats label names constants etc
 -define(FMT_LABEL_NAME,  16#80+1).  %% unsigned integer
@@ -105,7 +105,7 @@
 	?FMT_NAME(jump_name, ?FMT_JUMP_NAME)
 	?FMT_NAME(module, ?FMT_MODULE)
 	?FMT_NAME(function, ?FMT_FUNCTION)
-	?FMT_NAME(mov_addr, ?FMT_MOV_ADDR)
+	?FMT_NAME(op_addr, ?FMT_OP_ADDR)
        ).
 
 -endif.
