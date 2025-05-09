@@ -8,6 +8,8 @@
 -module(sljit_asm).
 
 -export([assemble/1, assemble/2]).
+-export([assemble_list/1, assemble_list/2, assemble_list/3]).
+-export([assemble_file/2, assemble_file/3]).
 -export([disasm/1, disasm/2, disasm/3]).
 -export([load/1]).
 -export([save_as_bin/2]).
@@ -114,11 +116,16 @@
 %% Assemble a file.asm into slo object binary
 -spec assemble(Filename::string()) -> {ok, binary()} | {error, term()}.
 assemble(Filename) ->
+    assemble(auto, Filename).
+
+-spec assemble(Arch::sljit:arch(), Filename::string()) ->
+	  {ok, binary()} | {error, term()}.
+assemble(Arch, Filename) ->
     case file:consult(Filename) of
 	{ok, Instructions} ->
 	    case file:open(<<>>, [ram, binary, write]) of
 		{ok, Fd} ->
-		    Compile = sljit:create_compiler(),
+		    Compile = sljit:create_compiler(Arch),
 		    _Sym = asm_ins_list({fd,Fd,Compile}, Instructions, #{}),
 		    {ok, ObjBin} = ram_file:get_file(Fd),
 		    file:close(Fd),
@@ -130,9 +137,14 @@ assemble(Filename) ->
 	    Error
     end.
 
--spec assemble(Filename::string(), DstFilename::string()) -> 
+-spec assemble_file(Filename::string(), DstFilename::string()) -> 
 	  ok | {error, term()}.
-assemble(Filename, DstFilename) ->
+assemble_file(Filename, DstFilename) ->
+    assemble_file(auto, Filename, DstFilename).
+
+-spec assemble_file(Arch::sljit:arch(),Filename::string(), DstFilename::string()) -> 
+	  ok | {error, term()}.
+assemble_file(Arch, Filename, DstFilename) ->
     Ext = filename:extension(DstFilename),
     DstFilename1 = case Ext of
 		       ".slo" -> DstFilename;
@@ -146,7 +158,7 @@ assemble(Filename, DstFilename) ->
 			end,
 	    case file:open(DstFilename1, WriteOpts) of
 		{ok, Fd} ->
-		    Compile = sljit:create_compiler(),
+		    Compile = sljit:create_compiler(Arch),
 		    _Sym = asm_ins_list({fd,Fd,Compile}, Instructions, #{}),
 		    if Ext =:= ".bin" ->
 			    {_,Code} = sljit:generate_code(Compile),
@@ -162,6 +174,29 @@ assemble(Filename, DstFilename) ->
 	Error ->
 	    Error
     end.
+
+%% Assemble a file.asm into machine code binary
+
+-spec assemble_list(Instuctions::[term()]) -> 
+	  {ok, binary()} | {error, term()}.
+assemble_list(Instructions) when is_list(Instructions) ->
+    assemble_list(aut, Instructions).
+
+-spec assemble_list(Arch::sljit:arch(),Instuctions::[term()]) -> 
+	  {ok, binary()} | {error, term()}.
+assemble_list(Arch,Instructions) when is_list(Instructions) ->
+    Compile = sljit:create_compiler(Arch),
+    _Sym = asm_ins_list(Compile, Instructions, #{}),
+    {_,Code} = sljit:generate_code(Compile),
+    Bin = sljit:get_code(Code),
+    {ok, Bin}.
+
+-spec assemble_list(Arch::sljit:arch(),Instuctions::[term()],Filename::string()) ->
+	  ok | {error, term()}.
+assemble_list(Arch,Instructions,Filename) when is_list(Instructions) ->
+    {ok,Bin} = assemble_list(Arch,Instructions),
+    file:write_file(Filename, Bin).
+
 
 disasm(Filename) ->
     disasm(Filename, undefined, []).
@@ -230,6 +265,9 @@ print_object(Ins, Fd) ->
 -undef(OP2_NAME).
 -define(OP2_NAME(I, N), N -> I; ).
 
+-undef(OP2R_NAME).
+-define(OP2R_NAME(I, N), N -> I; ).
+
 -undef(OP_SRC_NAME).
 -define(OP_SRC_NAME(I, N), N -> I; ).
 
@@ -295,7 +333,7 @@ disasm_ins(F, Args, St) ->
 	    {{Name,dsrc(Src1,Src1w),dsrc(Src2,Src2w)},St};
 	{?FMT_OP2R, [Op, DR, Src1, Src1w, Src2, Src2w]} ->
 	    Name = case Op of
-		       ?OP2_LIST
+		       ?OP2R_LIST
 		       _ -> throw({error, {unknown_op, Op}})
 		   end,
 	    {{Name,dreg(DR),dsrc(Src1,Src1w),dsrc(Src2,Src2w)},St};
@@ -434,15 +472,14 @@ save_as_bin(Code, DstFilename) ->
     Bin = sljit:get_code(Code),
     file:write_file(DstFilename1, Bin).
 
-
-    
-
 load(Filename) ->
+    load(auto,Filename).
+load(Arch,Filename) ->
     case filename:extension(Filename) of
 	".asm" ->
 	    case file:consult(Filename) of
 		{ok, InsList} ->
-		    Compile = sljit:create_compiler(),
+		    Compile = sljit:create_compiler(Arch),
 		    _St = asm_ins_list(Compile, InsList, #{}),
 		    sljit:generate_code(Compile);
 		Error ->
@@ -451,7 +488,7 @@ load(Filename) ->
 	".slo" ->
 	    case load_slo(Filename) of
 		{ok, Slo} ->
-		    Compile = sljit:create_compiler(),
+		    Compile = sljit:create_compiler(Arch),
 		    _St = slo_ins_list(Compile, Slo, #{}),
 		    sljit:generate_code(Compile);
 		Error ->
@@ -462,9 +499,11 @@ load(Filename) ->
     end.
 
 load_slo(File) ->
+    load_slo(auto,File).
+load_slo(Arch,File) ->
     case file:read_file(File) of
 	{ok, Bin} ->
-	    Compile = sljit:create_compiler(),
+	    Compile = sljit:create_compiler(Arch),
 	    load_object(Compile, Bin, []);
 	Error ->
 	    Error
@@ -646,7 +685,7 @@ asm_ins(Compile, Instruction, St) ->
 	?FMT_OP1 -> ins_op1(Compile, Instruction, St);
 	?FMT_OP2 -> ins_op2(Compile, Instruction, St);
 	%% ?FMT_OP2U -> ins_op2u(Compile, Instruction, St);
-	%% ?FMT_OP2R -> ins_op2r(Compile, Instruction, St);
+	?FMT_OP2R -> ins_op2(Compile, Instruction, St);
 	%% ?FMT_SI -> ins_si(Compile, Instruction, St);
 	?FMT_OP_SRC -> ins_op_src(Compile, Instruction, St);
 	?FMT_OP_DST -> ins_op_dst(Compile, Instruction, St);
@@ -728,6 +767,9 @@ ins_op1(Compile, {Ins, D, S}, St) ->
 -undef(OP2_NAME).
 -define(OP2_NAME(I, N), I -> N; ).
 
+-undef(OP2R_NAME).
+-define(OP2R_NAME(I, N), I -> N; ).
+
 -undef(OP_SI_NAME).
 -define(OP_SI_NAME(I, N), I -> (N); ).
 
@@ -746,16 +788,23 @@ ins_op2(Compile, {Ins, Fs, S1, S2}, St) when is_list(Fs) ->
 ins_op2(Compile, {Ins, Fs, D, S1, S2}, St) when is_list(Fs) ->
     Op = case Ins of
 	     ?OP2_LIST
+	     ?OP2R_LIST
 	     _ -> throw({error, {unknown_op2, Ins}})
 	 end,
     OpF = ins_set_flags(Fs),
     {Src1, Src1w} = src(S1),
     {Src2, Src2w} = src(S2),
-    case dst(D) of
-	{DR, 0} when ?SLJIT_IS_REG(DR) ->
+    {Dst, Dstw} = dst(D),
+
+    IsOP2R = case Ins of 
+		 ?OP2R_LIST
+		 _ -> false
+	     end,
+    if is_integer(IsOP2R), ?SLJIT_IS_REG(Dst), Dstw =:= 0 ->
+
 	    ok = emit(Compile, op2r,
-		      [Op bor OpF, DR, Src1, Src1w, Src2, Src2w]);
-	{Dst, Dstw} ->
+		      [Op bor OpF, Dst, Src1, Src1w, Src2, Src2w]);
+       true ->
 	    ok = emit(Compile, op2,
 		      [Op bor OpF, Dst, Dstw, Src1, Src1w, Src2, Src2w])
     end,
@@ -812,12 +861,13 @@ ins_fop2(Compile, {Ins, Fs, D, S1, S2}, St) ->
     %% fixme: emit imm float 
     {Src1, Src1w} = fsrc(S1),
     {Src2, Src2w} = fsrc(S2),
-    case fdst(D) of
-	{DR, 0} when ?SLJIT_IS_REG(DR) ->
+    {Dst, Dstw} = fdst(D),
+
+    if ?SLJIT_IS_REG(Dst), Dstw =:= 0 ->
 	    ok = emit(Compile, fop2r, 
-		      [Op1, DR, Src1, Src1w, Src2, Src2w]),
+		      [Op1, Dst, Src1, Src1w, Src2, Src2w]),
 	    St;
-	{Dst, Dstw} ->
+       true ->
 	    ok = emit(Compile, fop2, 
 		      [Op1,Dst, Dstw, Src1, Src1w, Src2, Src2w]),
 	    St
@@ -1296,6 +1346,9 @@ emit_func(label_addr) -> label_addr.
 -undef(OP2_NAME).
 -define(OP2_NAME(I, N), I -> ?FMT_OP2; ).
 
+-undef(OP2R_NAME).
+-define(OP2R_NAME(I, N), I -> ?FMT_OP2R; ).
+
 -undef(FOP1_NAME).
 -define(FOP1_NAME(I, N), I -> ?FMT_FOP1; ).
 
@@ -1321,6 +1374,7 @@ fmt(Ins) ->
 	?OP_DST_LIST
 	?OP1_LIST
 	?OP2_LIST
+	?OP2R_LIST
 	?FOP1_LIST
 	?FOP2_LIST
 	?OP_FCOPY_LIST

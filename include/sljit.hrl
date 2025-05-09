@@ -365,6 +365,10 @@
 	?OP2_NAME(rotr, ?SLJIT_ROTR)
 	?OP2_NAME(rotr32, ?SLJIT_ROTR32)).
 
+-define(OP2R_LIST,
+	?OP2R_NAME(muladd, ?SLJIT_MULADD)
+	?OP2R_NAME(muladd32, ?SLJIT_MULADD32)).
+
 -define(OP_SI_LIST,
 	?OP_SI_NAME(shl, ?SLJIT_SHL)
 	?OP_SI_NAME(shl32, ?SLJIT_SHL32)

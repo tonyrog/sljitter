@@ -12,7 +12,9 @@
 -export([cpu_features/0]).
 -export([cpu_feature/1]).
 -export([has_cpu_feature/1]).
+-export([has_cpu_feature/2]).
 -export([create_compiler/0]).
+-export([create_compiler/1]).
 -export([generate_code/1]).
 -export([unregister_code/1]).
 -export([get_code/1]).
@@ -86,6 +88,10 @@
 -type const() :: reference().
 -type unsigned() :: non_neg_integer().
 
+-type arch() :: x86_32 | x86_64 | arm_v6 | arm_v7 | arm_thumb2 | arm_64 |
+		ppc_32 | ppc_64 | mips_32 | mips_64 | riscv_32 | riscv_64 |
+		s390x | loongarch_64 | emulator.
+
 -include("../include/sljit.hrl").
 
 -define(nif_stub(),
@@ -97,6 +103,10 @@ init() ->
 
 -spec create_compiler() -> compiler().
 create_compiler() ->
+    ?nif_stub().
+
+-spec create_compiler(Arch::arch()) -> compiler().
+create_compiler(_Arch) ->
     ?nif_stub().
 
 -spec get_platform_name() -> string().
@@ -129,6 +139,11 @@ feature_map() ->
 -spec has_cpu_feature(Feature::integer()) ->
 	  boolean().
 has_cpu_feature(_Feature) ->
+    ?nif_stub().
+
+-spec has_cpu_feature(Arch::arch(), Feature::integer()) ->
+	  boolean().
+has_cpu_feature(_Arch, _Feature) ->
     ?nif_stub().
 
 cpu_features() ->

@@ -7,11 +7,20 @@ CFLAGS=-MMD -MP -MF .$(notdir $<).d -I$(ERL_TOP)/usr/include
 
 APP=sljit
 CFLAGS+= -Wall -Wextra  -fno-common -O2 # -Wswitch-enum  -Wswitch-default
-CFLAGS+= -I../external/sljit/sljit_src -DSLJIT_DEBUG=0 -DSLJIT_VERBOSE=1 -DSLJIT_CONFIG_AUTO=1
+CFLAGS+= -I../external/sljit/sljit_src -DSLJIT_DEBUG=0 -DSLJIT_VERBOSE=1
+
+
+-DSLJIT_CONFIG_EMULATOR=1 # -DSLJIT_CONFIG_AUTO=1
 
 LDFLAGS+=-shared
 
-OBJS = $(APP)_nif.o sljitLir.o
+OBJS = $(APP)_nif.o sljitter_x86_64.o sljitter_x86_32.o \
+	sljitter_arm_64.o \
+	sljitter_emulator.o
+#	sljitter_arm_v6.o sljitter_arm_v7.o
+# sljitter_arm_thumb2.o \
+#	sljitter_arm_64.o
+
 LIBS = -lffcall
 
 all: ../priv/$(APP)_nif.so
@@ -19,8 +28,26 @@ all: ../priv/$(APP)_nif.so
 ../priv/$(APP)_nif.so: $(OBJS)
 	$(CC) $(LDFLAGS) $(OBJS) $(LIBS) -o $@
 
-sljitLir.o: ../external/sljit/sljit_src/sljitLir.c
-	$(CC) $(CFLAGS) -c -fPIC $<
+sljitter_x86_64.o: ../external/sljit/sljit_src/sljitLir.c sljitter_backend.h
+	$(CC) $(CFLAGS) -DSLJIT_CONFIG_X86_64=1 -c -o$@ -fPIC sljitter_backend.c
+
+sljitter_x86_32.o: ../external/sljit/sljit_src/sljitLir.c sljitter_backend.h
+	$(CC) $(CFLAGS) -DSLJIT_CONFIG_X86_32=1 -c -o$@ -fPIC sljitter_backend.c
+
+sljitter_arm_v6.o: ../external/sljit/sljit_src/sljitLir.c sljitter_backend.h
+	$(CC) $(CFLAGS) -DSLJIT_CONFIG_ARM_V6=1 -c -o$@ -fPIC sljitter_backend.c
+
+sljitter_arm_v7.o: ../external/sljit/sljit_src/sljitLir.c sljitter_backend.h
+	$(CC) $(CFLAGS) -DSLJIT_CONFIG_ARM_V7=1 -c -o$@ -fPIC sljitter_backend.c
+
+sljitter_arm_thumb2.o: ../external/sljit/sljit_src/sljitLir.c sljitter_backend.h
+	$(CC) $(CFLAGS) -DSLJIT_CONFIG_ARM_THUMB2=1 -c -o$@ -fPIC sljitter_backend.c
+
+sljitter_arm_64.o: ../external/sljit/sljit_src/sljitLir.c sljitter_backend.h
+	$(CC) $(CFLAGS) -DSLJIT_CONFIG_ARM_64=1 -c -o$@ -fPIC sljitter_backend.c
+
+sljitter_emulator.o: ../external/sljit/sljit_src/sljitLir.c sljitter_backend.h
+	$(CC) $(CFLAGS) -DSLJIT_CONFIG_EMULATOR=1 -c -o$@ -fPIC sljitter_backend.c
 
 %.o:	%.c
 	$(CC) $(CFLAGS) -c -fPIC $<

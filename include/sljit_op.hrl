@@ -169,7 +169,7 @@
 -define(SLJIT_MEM2(R1,R2),	(?SLJIT_MEM bor (R1) bor ((R2) bsl 8))).
 -define(SLJIT_IMM,		16#7f).
 -define(SLJIT_REG_PAIR(R1,R2),	((R1) bor ((R2) bsl 8))).
--define(SLJIT_IS_REG(Arg),	((Arg) > 0 andalso (arg) < ?SLJIT_IMM)).
+-define(SLJIT_IS_REG(Arg),	(((Arg) > 0) andalso ((Arg) < ?SLJIT_IMM))).
 -define(SLJIT_IS_MEM(Arg),	((Arg) band ?SLJIT_MEM)).
 -define(SLJIT_IS_MEM0(Arg),	((Arg) == ?SLJIT_MEM)).
 -define(SLJIT_IS_MEM1(Arg),	((Arg) > ?SLJIT_MEM andalso (Arg) < (?SLJIT_MEM bsl 1))).

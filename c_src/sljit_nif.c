@@ -5,9 +5,15 @@
 #include <memory.h>
 #include <math.h>
 #include <unistd.h>
+#include <dlfcn.h>
 
 #include "erl_nif.h"
+
+#define SLJIT_CONFIG_UNSUPPORTED 1
+// #include "sljitConfigInternal.h"
 #include "sljitLir.h"
+
+#include "sljitter_backend.h"
 
 #define NIF_TRACE
 #define DEBUG
@@ -28,6 +34,7 @@
 #define NIF_LIST \
     NIF("has_cpu_feature", 1, nif_has_cpu_feature) \
     NIF("create_compiler",   0, nif_create_compiler) \
+    NIF("create_compiler",   1, nif_create_compiler) \
     NIF("module",     2, nif_module) \
     NIF("function",   2, nif_function) \
     NIF("constant",   3, nif_constant) \
@@ -96,6 +103,23 @@ DECL_ATOM(ex_alloc_failed);
 DECL_ATOM(unsupported);
 DECL_ATOM(bad_argument);
 DECL_ATOM(undefined);
+// architecture
+DECL_ATOM(auto);
+DECL_ATOM(x86_64);
+DECL_ATOM(x86_32);
+DECL_ATOM(arm_v6);
+DECL_ATOM(arm_v7);
+DECL_ATOM(arm_thumb2);
+DECL_ATOM(arm_64);
+DECL_ATOM(ppc_32);
+DECL_ATOM(ppc_64);
+DECL_ATOM(mips_32);
+DECL_ATOM(mips_64);
+DECL_ATOM(riscv_32);
+DECL_ATOM(riscv_64);
+DECL_ATOM(s390x);
+DECL_ATOM(loongarch_64);
+DECL_ATOM(emulator);
 // code info
 DECL_ATOM(code);
 DECL_ATOM(code_size);
@@ -189,16 +213,19 @@ static ErlNifResourceType* const_res;
 
 typedef struct {
     struct sljit_jump* jump;
+    sljitter_backend_t* backend;     // code generator API    
 } jump_t;
 
 typedef struct {
     struct sljit_label* label;
+    sljitter_backend_t* backend;     // code generator API
 } label_t;
 
 typedef struct {
     sljit_s32 op;
     ERL_NIF_TERM def; // default label value
     struct sljit_const* constp;
+    sljitter_backend_t* backend;     // code generator API    
 } const_t;
 
 
@@ -210,6 +237,7 @@ typedef struct code_t {
     struct module_entry_t* mod_ent;
     struct export_link_t* exp_list;  // list of links to export entries
     struct addr_entry_t* addr_list;  // list of generated constants/labels and jumps
+    sljitter_backend_t* backend;     // code generator API
 } code_t;
 
 // signature type void only for return value
@@ -268,7 +296,7 @@ typedef struct addr_entry_t {
     ERL_NIF_TERM name;   // the name of label/const/jump
     addr_type_t type;    // types switch
     union {
-	const_t* cnst;   // resource  
+	const_t* cnst;   // resource
 	label_t* lbl;    // resource
 	jump_t*  jmp;    // resource
 	void*    res;    // common pointer
@@ -284,7 +312,8 @@ typedef struct module_entry_t {
 } module_entry_t;
 
 typedef struct {
-    ERL_NIF_TERM mod;    
+    sljitter_backend_t* backend;  // code generator API
+    ERL_NIF_TERM mod;
     struct sljit_compiler* compiler;
     export_entry_t* xent;         // current export entry
     module_entry_t* ment;         // current module entry
@@ -563,17 +592,115 @@ ERL_NIF_TERM nif_return(ErlNifEnv* env, int err)
     }
 }
 
+static struct {
+    char* name;
+    ERL_NIF_TERM* atm;
+} backend_list[] =
+{
+    { "sljitter_x86_32", &ATOM(x86_32) },
+    { "sljitter_x86_64", &ATOM(x86_64) },
+    { "sljitter_arm_v6", &ATOM(arm_v6) },
+    { "sljitter_arm_v7", &ATOM(arm_v7) },
+    { "sljitter_arm_thumb2", &ATOM(arm_thumb2) },
+    { "sljitter_arm_64", &ATOM(arm_64) },
+    { "sljitter_ppc_32", &ATOM(ppc_32) },
+    { "sljitter_ppc_64", &ATOM(ppc_64) },
+    { "sljitter_mips_32", &ATOM(mips_32) },
+    { "sljitter_mips_64", &ATOM(mips_64) },
+    { "sljitter_riscv_32", &ATOM(riscv_32) },
+    { "sljitter_riscv_64", &ATOM(riscv_64) },
+    { "sljitter_s390x", &ATOM(s390x) },
+    { "sljitter_loongarch_64", &ATOM(loongarch_64)},
+    { "sljitter_emulator", &ATOM(emulator)},
+    { NULL, &ATOM(unsupported) },
+};
+
+static sljitter_backend_t* select_backend_by_name(const char* name)
+{
+// enif_dlsym(RTLD_DEFAULT, sym_err, name);    
+    return (sljitter_backend_t*) dlsym((void*)0, name);
+}
+
+
+// find the backend matching the host platform
+static ERL_NIF_TERM auto_backend()
+{
+#if defined(__i386__) || defined(__i386)
+    return ATOM(x86_32);
+#elif defined(__x86_64__)
+    return ATOM(x86_64);
+#elif defined(__aarch64__)
+    return ATOM(arm_64);
+#elif defined(__thumb2__)
+    return ATOM(arm_thumb2);
+#elif (defined(__ARM_ARCH) && __ARM_ARCH >= 7) ||			\
+    ((defined(__ARM_ARCH_7__) || defined(__ARM_ARCH_7A__) || defined(__ARM_ARCH_7R__) || defined(__ARM_ARCH_7S__)) \
+     || (defined(__ARM_ARCH_8A__) || defined(__ARM_ARCH_8R__)) \
+     || (defined(__ARM_ARCH_9A__)))
+    return ATOM(arm_v7);
+#elif defined(__arm__) || defined (__ARM__)
+    return ATOM(arm_v6);
+#elif defined(__ppc64__) || defined(__powerpc64__) || (defined(_ARCH_PPC64) && defined(__64BIT__)) || (defined(_POWER) && defined(__64BIT__))
+    return ATOM(ppc_64);
+#elif defined(__ppc__) || defined(__powerpc__) || defined(_ARCH_PPC) || defined(_ARCH_PWR) || defined(_ARCH_PWR2) || defined(_POWER)
+    return ATOM(ppc_32);
+#elif defined(__mips__) && !defined(_LP64)
+    return ATOM(mips_32);
+#elif defined(__mips64)
+    return ATOM(mips_64);
+#elif defined (__riscv_xlen) && (__riscv_xlen == 32)
+    return ATOM(riscv_32);
+#elif defined (__riscv_xlen) && (__riscv_xlen == 64)
+    return ATOM(riscv_64);
+#elif defined (__loongarch_lp64)
+    return ATOM(loongarch_64);
+#elif defined(__s390x__)
+    return ATOM(s390x);
+#else
+    return ATOM(unsupported);
+#endif
+}
+
+static sljitter_backend_t* select_backend(ERL_NIF_TERM name)
+{
+    int i;
+    if (name == ATOM(auto))
+	name = auto_backend();
+    for (i = 0; backend_list[i].name != NULL; i++) {
+	if (name == *(backend_list[i].atm)) 
+	    return select_backend_by_name(backend_list[i].name);
+    }
+    return NULL;
+}
 
 ERL_NIF_TERM nif_has_cpu_feature(ErlNifEnv* env, int argc,
 				 const ERL_NIF_TERM argv[])
 {
     UNUSED(argc);
     UNUSED(argv);
+    ERL_NIF_TERM name;    
     sljit_s32 feature_type;
+    sljitter_backend_t* bep;
     
+    if (argc == 0)
+	name = auto_backend();
+    else {
+	if (!enif_is_atom(env, argv[1]))
+	    return EXCP_BADARG_N(env, 1, "not a architecture name");
+	name = argv[1];
+    }
+    if ((bep = select_backend(name)) == NULL)
+	return EXCP_BADARG_N(env, 0, "architecture not supported");
+
     if (!get_s32(env, argv[0], &feature_type))
-	return EXCP_BADARG_N(env, 0, "not an integer");
-    return make_bool(env, sljit_has_cpu_feature(feature_type));
+	return EXCP_BADARG_N(env, 0, "not an integer");    
+    
+    return make_bool(env, (bep->has_cpu_feature)(feature_type));
+}
+
+void sym_err(void* arg, char* error)
+{
+    enif_fprintf(stderr, "lookup [%s] error: %s\n", (char*) arg, error);
 }
 
 
@@ -586,16 +713,26 @@ ERL_NIF_TERM nif_create_compiler(ErlNifEnv* env, int argc,
     void *allocator_data = NULL;
     compiler_t* cp;
     ERL_NIF_TERM term;
+    sljitter_backend_t* bep;
 
-    cptr = sljit_create_compiler(allocator_data);
+    if (argc == 0)
+	bep = select_backend(ATOM(auto));
+    else
+	bep = select_backend(argv[0]);
+   
+     if (bep == NULL)
+	 return EXCP_BADARG_N(env, 0, "architecture not supported");
+    
+    cptr = (bep->create_compiler)(allocator_data);
     cp = enif_alloc_resource(compiler_res, sizeof(compiler_t));
+    cp->backend = bep;
     cp->compiler = cptr;
     cp->mod = ATOM(undefined);
     cp->ment = NULL;  // set by nif_module()
     cp->xent = NULL;  // set by nif_function()
     cp->exp_list = NULL;
     cp->addr_list = NULL;
-    sljit_compiler_verbose(cptr, stdout);
+    // sljit_compiler_verbose(cptr, stdout);
     term = enif_make_resource(env,cp);
     enif_release_resource(cp);
     return term;
@@ -648,7 +785,7 @@ ERL_NIF_TERM nif_function(ErlNifEnv* env, int argc,
     xlink->next = cp->exp_list;  // link into compilers export list
     cp->exp_list = xlink;
 
-    if ((label = sljit_emit_label(cp->compiler)) == NULL)
+    if ((label = (cp->backend->emit_label)(cp->compiler)) == NULL)
 	return nif_return(env, SLJIT_ERR_ALLOC_FAILED);
     xlink->label = label;
     cp->xent = xent;        // current function
@@ -715,14 +852,30 @@ ERL_NIF_TERM nif_jump_addr(ErlNifEnv* env, int argc,
     return ATOM(ok);
 }
 
-
+    
 ERL_NIF_TERM nif_get_platform_name(ErlNifEnv* env, int argc,
 				   const ERL_NIF_TERM argv[])
 {
     UNUSED(argc);
     UNUSED(argv);
-    const char* name = sljit_get_platform_name();
-    return enif_make_string(env, name, ERL_NIF_LATIN1);
+    const char* name;    
+    ERL_NIF_TERM list;
+    ERL_NIF_TERM last;
+    unsigned int num = 0;
+    int i;
+    
+    list = enif_make_list(env, 0);
+    for (i = 0; backend_list[i].name != NULL; i++) {
+	sljitter_backend_t* bep;
+	if ((bep = select_backend_by_name(backend_list[i].name)) != NULL) {
+	    name = (bep->get_platform_name)();
+	    last = enif_make_tuple2(env, *(backend_list[i].atm),
+				    enif_make_string(env,name,ERL_NIF_LATIN1));
+	    list = enif_make_list_cell(env, last, list);
+	    num++;
+	}
+    }
+    return list;
 }
 
 static int arg_types_argc(sljit_s32 arg_types)
@@ -773,17 +926,18 @@ ERL_NIF_TERM nif_generate_code(ErlNifEnv* env, int argc,
     
     enif_fprintf(stdout, "start generating code\r\n");
     
-    code = sljit_generate_code(cp->compiler, 0, NULL);
+    code = (cp->backend->generate_code)(cp->compiler, 0, NULL);
     if (code == NULL)
 	return EXCP_BADARG_N(env, 0, "unable to generate code");
 	
     crp = enif_alloc_resource(code_res, sizeof(code_t));
     memset(crp, 0, sizeof(code_t));
-    
+
+    crp->backend = cp->backend;
     crp->addr = code;
     crp->exec_allocator_data = NULL;
-    crp->exec_offset = sljit_get_executable_offset(cp->compiler);
-    crp->code_size   = sljit_get_generated_code_size(cp->compiler);
+    crp->exec_offset = (cp->backend->get_executable_offset)(cp->compiler);
+    crp->code_size   = (cp->backend->get_generated_code_size)(cp->compiler);
     crp->mod_ent     = NULL;
     crp->exp_list    = NULL;
     crp->addr_list = cp->addr_list;
@@ -799,15 +953,15 @@ ERL_NIF_TERM nif_generate_code(ErlNifEnv* env, int argc,
     while(ap != NULL) {
 	switch(ap->type) {
 	case ADDR_CONST:
-	    ap->addr = sljit_get_const_addr(ap->cnst->constp);
+	    ap->addr = (crp->backend->get_const_addr)(ap->cnst->constp);
 	    DBG("addr_const: %T = %p\r\n", ap->name, ap->addr);
 	    break;
 	case ADDR_LABEL:
-	    ap->addr = sljit_get_label_addr(ap->lbl->label);
+	    ap->addr = (crp->backend->get_label_addr)(ap->lbl->label);
 	    DBG("addr_label: %T = %p\r\n", ap->name, ap->addr);	    
 	    break;
 	case ADDR_JUMP:
-	    ap->addr = sljit_get_jump_addr(ap->jmp->jump);
+	    ap->addr = (crp->backend->get_jump_addr)(ap->jmp->jump);
 	    DBG("addr_jump: %T = %p\r\n", ap->name, ap->addr);
 	    break;
 	default:
@@ -824,7 +978,8 @@ ERL_NIF_TERM nif_generate_code(ErlNifEnv* env, int argc,
 	    enif_fprintf(stderr, "resolve const label %T\r\n", ap->cnst->def);
 	    if ((bp = lookup_addr(crp->addr_list, ap->cnst->def, ADDR_LABEL)) != NULL) {
 		enif_fprintf(stderr, "  address = %p\r\n", bp->addr);
-		sljit_set_const(ap->addr, ap->cnst->op, bp->addr, crp->exec_offset);
+		(crp->backend->set_const)(ap->addr, ap->cnst->op,
+					  bp->addr, crp->exec_offset);
 	    }
 	}
 	ap = ap->next;
@@ -849,7 +1004,7 @@ ERL_NIF_TERM nif_generate_code(ErlNifEnv* env, int argc,
 	xlink = crp->exp_list;
 	while(xlink != NULL) {
 	    export_entry_t* xent = xlink->exp;
-	    void* addr = (void*) sljit_get_label_addr(xlink->label);
+	    void* addr = (void*) (crp->backend->get_label_addr)(xlink->label);
 	    __atomic_store_n(&xent->addr,addr,__ATOMIC_RELAXED);
 	    xlink = xlink->next;
 	}
@@ -1171,7 +1326,7 @@ ERL_NIF_TERM nif_emit_op0(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	return EXCP_BADARG_N(env, 0, "not a compiler");
     if (!get_s32(env, argv[1], &op))
 	return EXCP_BADARG_N(env, 1, "not an integer");
-    ret = sljit_emit_op0(cp->compiler, op);
+    ret = (cp->backend->emit_op0)(cp->compiler, op);
     return nif_return(env, ret);
 }
 
@@ -1196,7 +1351,7 @@ ERL_NIF_TERM nif_emit_op1(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	return EXCP_BADARG_N(env, 4, "not an integer");
     if (!get_sw(env, argv[5], &srcw))
 	return EXCP_BADARG_N(env, 5, "not an integer");    
-    ret = sljit_emit_op1(cp->compiler, op, dst, dstw, src, srcw);
+    ret = (cp->backend->emit_op1)(cp->compiler, op, dst, dstw, src, srcw);
     return nif_return(env, ret);
 }
 
@@ -1229,7 +1384,7 @@ ERL_NIF_TERM nif_emit_op2(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	return EXCP_BADARG_N(env, 6, "not an integer");
     if (!get_sw(env, argv[7], &src2w))
 	return EXCP_BADARG_N(env, 7, "not an integer");
-    ret = sljit_emit_op2(cp->compiler, op, dst, dstw, src1, src1w, src2, src2w);
+    ret = (cp->backend->emit_op2)(cp->compiler, op, dst, dstw, src1, src1w, src2, src2w);
     return nif_return(env, ret);
 }
 
@@ -1256,7 +1411,7 @@ ERL_NIF_TERM nif_emit_op2u(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	return EXCP_BADARG_N(env, 4, "not an integer");
     if (!get_sw(env, argv[5], &src2w))
 	return EXCP_BADARG_N(env, 5, "not an integer");
-    ret = sljit_emit_op2u(cp->compiler, op, src1, src1w, src2, src2w);
+    ret = (cp->backend->emit_op2u)(cp->compiler, op, src1, src1w, src2, src2w);
     return nif_return(env, ret);
 }
 
@@ -1285,7 +1440,7 @@ ERL_NIF_TERM nif_emit_op2r(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	return EXCP_BADARG_N(env, 5, "not an integer");
     if (!get_sw(env, argv[6], &src2w))
 	return EXCP_BADARG_N(env, 6, "not an integer");
-    ret = sljit_emit_op2r(cp->compiler, op, dst_reg, src1, src1w, src2, src2w);
+    ret = (cp->backend->emit_op2r)(cp->compiler, op, dst_reg, src1, src1w, src2, src2w);
     return nif_return(env, ret);
 }
 
@@ -1316,8 +1471,8 @@ ERL_NIF_TERM nif_emit_shift_into(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
 	return EXCP_BADARG_N(env, 5, "not an integer");
     if (!get_sw(env, argv[6], &src3w))
 	return EXCP_BADARG_N(env, 6, "not an integer");        
-    ret = sljit_emit_shift_into(cp->compiler, op, dst_reg,
-				src1_reg, src2_reg, src3, src3w);
+    ret = (cp->backend->emit_shift_into)(cp->compiler, op, dst_reg,
+					 src1_reg, src2_reg, src3, src3w);
     return nif_return(env, ret);    
 }
 
@@ -1338,7 +1493,7 @@ ERL_NIF_TERM nif_emit_src(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	return EXCP_BADARG_N(env, 2, "not an integer");
     if (!get_sw(env, argv[3], &srcw))
 	return EXCP_BADARG_N(env, 3, "not an integer");    
-    ret = sljit_emit_op_src(cp->compiler, op, src, srcw);
+    ret = (cp->backend->emit_op_src)(cp->compiler, op, src, srcw);
     return nif_return(env, ret);    
 }
 
@@ -1359,7 +1514,7 @@ ERL_NIF_TERM nif_emit_dst(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	return EXCP_BADARG_N(env, 2, "not an integer");
     if (!get_sw(env, argv[3], &dstw))
 	return EXCP_BADARG_N(env, 3, "not an integer");    
-    ret = sljit_emit_op_dst(cp->compiler, op, dst, dstw);
+    ret = (cp->backend->emit_op_dst)(cp->compiler, op, dst, dstw);
     return nif_return(env, ret);    
 }
 
@@ -1384,7 +1539,7 @@ ERL_NIF_TERM nif_emit_fop1(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	return EXCP_BADARG_N(env, 4, "not an integer");
     if (!get_sw(env, argv[5], &srcw))
 	return EXCP_BADARG_N(env, 5, "not an integer");
-    ret = sljit_emit_fop1(cp->compiler, op, dst, dstw, src, srcw);
+    ret = (cp->backend->emit_fop1)(cp->compiler, op, dst, dstw, src, srcw);
     return nif_return(env, ret);    
 }
 
@@ -1417,7 +1572,7 @@ ERL_NIF_TERM nif_emit_fop2(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	return EXCP_BADARG_N(env, 6, "not an integer");
     if (!get_sw(env, argv[7], &src2w))
 	return EXCP_BADARG_N(env, 7, "not an integer");
-    ret = sljit_emit_fop2(cp->compiler, op, dst, dstw, src1, src1w, src2, src2w);
+    ret = (cp->backend->emit_fop2)(cp->compiler, op, dst, dstw, src1, src1w, src2, src2w);
     return nif_return(env, ret);
 }
 
@@ -1448,7 +1603,7 @@ ERL_NIF_TERM nif_emit_fop2r(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	return EXCP_BADARG_N(env, 5, "not an integer");
     if (!get_sw(env, argv[6], &src2w))
 	return EXCP_BADARG_N(env, 6, "not an integer");
-    ret = sljit_emit_fop2r(cp->compiler, op, dstr, src1, src1w, src2, src2w);
+    ret = (cp->backend->emit_fop2r)(cp->compiler, op, dstr, src1, src1w, src2, src2w);
     return nif_return(env, ret);    
 }
 
@@ -1466,7 +1621,7 @@ ERL_NIF_TERM nif_emit_fset32(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
 	return EXCP_BADARG_N(env, 2, "not an integer");
     if (!get_float(env, argv[2], &value))
 	return EXCP_BADARG_N(env, 3, "not a float");
-    ret = sljit_emit_fset32(cp->compiler, freg, value);
+    ret = (cp->backend->emit_fset32)(cp->compiler, freg, value);
     return nif_return(env, ret);
 }
 
@@ -1484,7 +1639,7 @@ ERL_NIF_TERM nif_emit_fset64(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
 	return EXCP_BADARG_N(env, 2, "not an integer");
     if (!enif_get_double(env, argv[2], &value))
 	return EXCP_BADARG_N(env, 3, "not a float");
-    ret = sljit_emit_fset64(cp->compiler, freg, value);
+    ret = (cp->backend->emit_fset64)(cp->compiler, freg, value);
     return nif_return(env, ret);    
 }
 
@@ -1505,7 +1660,7 @@ ERL_NIF_TERM nif_emit_fcopy(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	return EXCP_BADARG_N(env, 2, "not an integer");
     if (!get_s32(env, argv[3], &reg))
 	return EXCP_BADARG_N(env, 3, "not an integer");
-    ret = sljit_emit_fcopy(cp->compiler, op, freg, reg);
+    ret = (cp->backend->emit_fcopy)(cp->compiler, op, freg, reg);
     return nif_return(env, ret);
 }
 
@@ -1519,9 +1674,10 @@ ERL_NIF_TERM nif_emit_label(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     
     if (!enif_get_resource(env, argv[0], compiler_res, (void**)&cp))
 	return EXCP_BADARG_N(env, 0, "not a compiler");
-    if ((label = sljit_emit_label(cp->compiler)) == NULL)
+    if ((label = (cp->backend->emit_label)(cp->compiler)) == NULL)
 	return nif_return(env, SLJIT_ERR_ALLOC_FAILED);
     lbl = enif_alloc_resource(label_res, sizeof(label_t));
+    lbl->backend = cp->backend;
     lbl->label = label;
     term = enif_make_resource(env,lbl);
     enif_release_resource(lbl);
@@ -1541,9 +1697,10 @@ ERL_NIF_TERM nif_emit_jump(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	return EXCP_BADARG_N(env, 0, "not a compiler");
     if (!get_s32(env, argv[1], &type))
 	return EXCP_BADARG_N(env, 1, "not an integer");
-    if ((jump = sljit_emit_jump(cp->compiler, type)) == NULL)
+    if ((jump = (cp->backend->emit_jump)(cp->compiler, type)) == NULL)
 	return nif_return(env, SLJIT_ERR_ALLOC_FAILED);
     jmp = enif_alloc_resource(jump_res, sizeof(jump_t));
+    jmp->backend = cp->backend;
     jmp->jump = jump;
     term = enif_make_resource(env,jmp);
     enif_release_resource(jmp);
@@ -1568,9 +1725,10 @@ ERL_NIF_TERM nif_emit_call(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     if (!get_s32(env, argv[2], &arg_types))
 	return EXCP_BADARG_N(env, 2, "not an integer");
     arg_types1 = arg_types_native(arg_types);
-    if ((jump = sljit_emit_call(cp->compiler, type, arg_types1)) == NULL)
+    if ((jump = (cp->backend->emit_call)(cp->compiler, type, arg_types1)) == NULL)
 	return nif_return(env, SLJIT_ERR_ALLOC_FAILED);
     jmp = enif_alloc_resource(jump_res, sizeof(jump_t));
+    jmp->backend = cp->backend;
     jmp->jump = jump;
     term = enif_make_resource(env,jmp);
     enif_release_resource(jmp);
@@ -1603,9 +1761,10 @@ ERL_NIF_TERM nif_emit_cmp(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     if (!get_sw(env, argv[5], &src2w))
 	return EXCP_BADARG_N(env, 7, "not an integer");
     
-    if ((jump = sljit_emit_cmp(cp->compiler, type, src1, src1w, src2, src2w)) == NULL)
+    if ((jump = (cp->backend->emit_cmp)(cp->compiler, type, src1, src1w, src2, src2w)) == NULL)
 	return nif_return(env, SLJIT_ERR_ALLOC_FAILED);    
     jmp = enif_alloc_resource(jump_res, sizeof(jump_t));
+    jmp->backend = cp->backend;
     jmp->jump = jump;
     term = enif_make_resource(env,jmp);
     enif_release_resource(jmp);
@@ -1637,10 +1796,11 @@ ERL_NIF_TERM nif_emit_fcmp(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	return EXCP_BADARG_N(env, 4, "not an integer");
     if (!get_sw(env, argv[5], &src2w))
 	return EXCP_BADARG_N(env, 5, "not an integer");
-    if ((jump = sljit_emit_fcmp(cp->compiler, type,
+    if ((jump = (cp->backend->emit_fcmp)(cp->compiler, type,
 				src1, src1w, src2, src2w)) == NULL)
 	return nif_return(env, SLJIT_ERR_ALLOC_FAILED);
     jmp = enif_alloc_resource(jump_res, sizeof(jump_t));
+    jmp->backend = cp->backend;
     jmp->jump = jump;
     term = enif_make_resource(env,jmp);
     enif_release_resource(jmp);
@@ -1657,7 +1817,7 @@ ERL_NIF_TERM nif_set_label(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	return EXCP_BADARG_N(env, 0, "not a jump");
     if (!enif_get_resource(env, argv[1], label_res, (void**)&lbl))
 	return EXCP_BADARG_N(env, 1, "not a label");
-    sljit_set_label(jmp->jump, lbl->label);
+    (jmp->backend->set_label)(jmp->jump, lbl->label);
     return ATOM(ok);
 }
 
@@ -1666,11 +1826,12 @@ ERL_NIF_TERM nif_get_label_addr(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 {
     UNUSED(argc);
     label_t* lbl;
-
+    sljit_uw addr;
     if (!enif_get_resource(env, argv[0], label_res, (void**)&lbl))
 	return EXCP_BADARG_N(env, 0, "not a label");
     // fixme check compiler for error?
-    return make_uw(env, sljit_get_label_addr(lbl->label));
+    addr = (lbl->backend->get_label_addr)(lbl->label);
+    return make_uw(env, addr);
 }
 
 ERL_NIF_TERM nif_set_target(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
@@ -1683,7 +1844,7 @@ ERL_NIF_TERM nif_set_target(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	return EXCP_BADARG_N(env, 0, "not a compiler");
     if (!get_uw(env, argv[1], &target))
 	return EXCP_BADARG_N(env, 1, "not an unsigned integer");
-    sljit_set_target(jmp->jump, target);
+    (jmp->backend->set_target)(jmp->jump, target);
     return ATOM(ok);    
 }
 
@@ -1703,8 +1864,8 @@ ERL_NIF_TERM nif_emit_ijump(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     if (!get_s32(env, argv[2], &src))
 	return EXCP_BADARG_N(env, 2, "not an integer");
     if (!get_sw(env, argv[3], &srcw))
-	return EXCP_BADARG_N(env, 3, "not an integer");    
-    ret = sljit_emit_ijump(cp->compiler, type, src, srcw);
+	return EXCP_BADARG_N(env, 3, "not an integer");
+    ret = (cp->backend->emit_ijump)(cp->compiler, type, src, srcw);
     return nif_return(env, ret);
 }
 
@@ -1729,7 +1890,7 @@ ERL_NIF_TERM nif_emit_mjump(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     if ((xent = lookup_export(get_ctx(env), argv[2], argv[3])) == NULL)
 	xent = create_export(get_ctx(env), argv[2], argv[3]);
     
-    ret = sljit_emit_ijump(cp->compiler, type, SLJIT_MEM0(), (sljit_sw) xent);
+    ret = (cp->backend->emit_ijump)(cp->compiler, type, SLJIT_MEM0(), (sljit_sw) xent);
     return nif_return(env, ret);
 }
 
@@ -1755,7 +1916,7 @@ ERL_NIF_TERM nif_emit_icall(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     if (!get_sw(env, argv[4], &srcw))
 	return EXCP_BADARG_N(env, 5, "not an integer");
     arg_types1 = arg_types_native(arg_types);    
-    ret = sljit_emit_icall(cp->compiler, type, arg_types1, src, srcw);    
+    ret = (cp->backend->emit_icall)(cp->compiler, type, arg_types1, src, srcw);    
     return nif_return(env, ret);
 }
 
@@ -1789,8 +1950,8 @@ ERL_NIF_TERM nif_emit_mcall(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 
     // FIXME: generate atomic load of addr
     arg_types1 = arg_types_native(arg_types);
-    ret = sljit_emit_icall(cp->compiler, type, arg_types1,
-			   SLJIT_MEM0(), (sljit_sw) &xent->addr);
+    ret = (cp->backend->emit_icall)(cp->compiler, type, arg_types1,
+				    SLJIT_MEM0(), (sljit_sw) &xent->addr);
     return nif_return(env, ret);
 }
 
@@ -1819,8 +1980,9 @@ ERL_NIF_TERM nif_emit_enter(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     if (!get_s32(env, argv[5], &local_size))
 	return EXCP_BADARG_N(env, 5, "not an integer");
     arg_types1 = arg_types_native(arg_types);
-    ret = sljit_emit_enter(cp->compiler, options, arg_types1, scratches,
-			   saveds, local_size);
+    ret = (cp->backend->emit_enter)(cp->compiler, options, arg_types1,
+				    scratches,
+				    saveds, local_size);
     if (cp->xent != NULL)
 	cp->xent->arg_types = arg_types;
     return nif_return(env, ret);
@@ -1851,8 +2013,9 @@ ERL_NIF_TERM nif_set_context(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
     if (!get_s32(env, argv[5], &local_size))
 	return EXCP_BADARG_N(env, 5, "not an integer");
     arg_types1 = arg_types_native(arg_types);    
-    ret = sljit_set_context(cp->compiler, options, arg_types1, scratches,
-			    saveds, local_size);
+    ret = (cp->backend->set_context)(cp->compiler, options, arg_types1,
+				     scratches,
+				     saveds, local_size);
     if (cp->xent != NULL)
 	cp->xent->arg_types = arg_types;    
     return nif_return(env, ret);
@@ -1876,7 +2039,7 @@ ERL_NIF_TERM nif_emit_return(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
 	return EXCP_BADARG_N(env, 2, "not an integer");
     if (!get_sw(env, argv[3], &srcw))
 	return EXCP_BADARG_N(env, 3, "not an integer");
-    ret = sljit_emit_return(cp->compiler, op, src, srcw);
+    ret = (cp->backend->emit_return)(cp->compiler, op, src, srcw);
     return nif_return(env, ret);
 }
 
@@ -1888,7 +2051,7 @@ ERL_NIF_TERM nif_emit_return_void(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
     
     if (!enif_get_resource(env, argv[0], compiler_res, (void**)&cp))
 	return EXCP_BADARG_N(env, 0, "not a compiler");
-    ret = sljit_emit_return_void(cp->compiler);
+    ret = (cp->backend->emit_return_void)(cp->compiler);
     return nif_return(env, ret);
 }
 
@@ -1906,7 +2069,7 @@ ERL_NIF_TERM nif_emit_return_to(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
 	return EXCP_BADARG_N(env, 1, "not an integer");
     if (!get_sw(env, argv[2], &srcw))
 	return EXCP_BADARG_N(env, 2, "not an integer");
-    ret = sljit_emit_return_to(cp->compiler, src, srcw);
+    ret = (cp->backend->emit_return_to)(cp->compiler, src, srcw);
     return nif_return(env, ret);
 }
 
@@ -1933,7 +2096,7 @@ ERL_NIF_TERM nif_emit_simd_op2(ErlNifEnv* env, int argc,
 	return EXCP_BADARG_N(env, 4, "not an integer");
     if (!get_sw(env, argv[5], &src2w))
 	return EXCP_BADARG_N(env, 5, "not an integer");    
-    ret = sljit_emit_simd_op2(cp->compiler, type, dst_vreg, src1_vreg,
+    ret = (cp->backend->emit_simd_op2)(cp->compiler, type, dst_vreg, src1_vreg,
 			      src2, src2w);
     return nif_return(env, ret);
 }
@@ -1968,8 +2131,9 @@ ERL_NIF_TERM nif_emit_const(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 	return EXCP_BADARG_N(env, 4, "not an integer");
 
     cpp = enif_alloc_resource(const_res, sizeof(const_t));
+    cpp->backend = cp->backend;
     cpp->def = def;
-    cpp->constp = sljit_emit_const(cp->compiler, op, dst, dstw, init_value);
+    cpp->constp = (cp->backend->emit_const)(cp->compiler, op, dst, dstw, init_value);
     cpp->op = op;
     term = enif_make_resource(env,cpp);
     enif_release_resource(cpp);
@@ -1995,9 +2159,10 @@ ERL_NIF_TERM nif_emit_op_addr(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     if (!get_sw(env, argv[3], &dstw))
 	return EXCP_BADARG_N(env, 3, "not an integer");    
 
-    if ((jump = sljit_emit_op_addr(cp->compiler, op, dst, dstw)) == NULL)
+    if ((jump = (cp->backend->emit_op_addr)(cp->compiler, op, dst, dstw)) == NULL)
 	return nif_return(env, SLJIT_ERR_ALLOC_FAILED);
     jmp = enif_alloc_resource(jump_res, sizeof(jump_t));
+    jmp->backend = cp->backend;
     jmp->jump = jump;
     term = enif_make_resource(env,jmp);
     enif_release_resource(jmp);
@@ -2013,7 +2178,7 @@ ERL_NIF_TERM nif_get_const_addr(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
     
     if (!enif_get_resource(env, argv[0], const_res, (void**)&ccp))
 	return EXCP_BADARG_N(env, 0, "not a constant");
-    ret = sljit_get_const_addr(ccp->constp);
+    ret = (ccp->backend->get_const_addr)(ccp->constp);
     return make_uw(env, ret);
 }
 
@@ -2039,7 +2204,8 @@ ERL_NIF_TERM nif_set_constant(ErlNifEnv* env, int argc,
 	return EXCP_BADARG_N(env, 1, "not a constant name");
 
     if (get_sw(env, argv[2], &new_constant)) {
-	sljit_set_const(ap->addr, ap->cnst->op, new_constant, crp->exec_offset);
+	(crp->backend->set_const)(ap->addr, ap->cnst->op, new_constant,
+				  crp->exec_offset);
     }
     else if (enif_is_atom(env, argv[2])) {  // check if label
 	addr_entry_t* bp;
@@ -2050,7 +2216,8 @@ ERL_NIF_TERM nif_set_constant(ErlNifEnv* env, int argc,
     else {
 	return EXCP_BADARG_N(env, 2, "not integer nor label name");
     }
-    sljit_set_const(ap->addr, ap->cnst->op, new_constant, crp->exec_offset);
+    (crp->backend->set_const)(ap->addr, ap->cnst->op, new_constant,
+			      crp->exec_offset);
     return ATOM(ok);	
     
 }
@@ -2083,7 +2250,7 @@ ERL_NIF_TERM nif_set_jump(ErlNifEnv* env, int argc,
     
     enif_fprintf(stdout, "jump=%p, target=%p\r\n",
 		 jump->addr, target->addr);
-    sljit_set_jump_addr(jump->addr, target->addr, crp->exec_offset);
+    (crp->backend->set_jump_addr)(jump->addr, target->addr, crp->exec_offset);
     return ATOM(ok);
 }
 
@@ -2139,7 +2306,7 @@ static void compiler_dtor(ErlNifEnv* env, void* ptr)
     }
     cp->xent = NULL;
     cp->ment = NULL;
-    sljit_free_compiler(((compiler_t*)ptr)->compiler);
+    (*cp->backend->free_compiler)(((compiler_t*)ptr)->compiler);
 }
 
 static void code_dtor(ErlNifEnv* env, void* ptr)
@@ -2178,7 +2345,7 @@ static void code_dtor(ErlNifEnv* env, void* ptr)
     
     crp->mod_ent = NULL;
     // FIXME: scan p->mod_list and clean up all export_entries
-    sljit_free_code(crp->addr, crp->exec_allocator_data);
+    (crp->backend->free_code)(crp->addr, crp->exec_allocator_data);
 }
 
 // label is not used any more, but is reachamble through compuler struct
@@ -2223,7 +2390,24 @@ static void load_atoms(ErlNifEnv* env)
     LOAD_ATOM(unsupported);
     LOAD_ATOM(bad_argument);
     LOAD_ATOM(undefined);
-
+    // architecture
+    LOAD_ATOM(auto);    
+    LOAD_ATOM(x86_64);
+    LOAD_ATOM(x86_32);
+    LOAD_ATOM(arm_v6);
+    LOAD_ATOM(arm_v7);
+    LOAD_ATOM(arm_thumb2);
+    LOAD_ATOM(arm_64);
+    LOAD_ATOM(ppc_32);
+    LOAD_ATOM(ppc_64);
+    LOAD_ATOM(mips_32);
+    LOAD_ATOM(mips_64);
+    LOAD_ATOM(riscv_32);
+    LOAD_ATOM(riscv_64);
+    LOAD_ATOM(s390x);
+    LOAD_ATOM(loongarch_64);
+    LOAD_ATOM(emulator);    
+    // code_info
     LOAD_ATOM(code);
     LOAD_ATOM(code_size);
     LOAD_ATOM(exec_offset);
