@@ -29,51 +29,67 @@
 #if (defined SLJIT_CONFIG_X86_32 && SLJIT_CONFIG_X86_32)
 #define BE_NAME sljitter_x86_32
 #define BE_ARCH SLJITTER_ARCH_X86_32
+#define BE_RUN  NULL
 #elif (defined SLJIT_CONFIG_X86_64 && SLJIT_CONFIG_X86_64)
 #define BE_NAME sljitter_x86_64
 #define BE_ARCH SLJITTER_ARCH_X86_64
+#define BE_RUN  NULL
 #elif (defined SLJIT_CONFIG_ARM_V6 && SLJIT_CONFIG_ARM_V6)
 #define BE_NAME sljitter_arm_v6
 #define BE_ARCH SLJITTER_ARCH_ARM_V6
+#define BE_RUN  NULL
 #elif (defined SLJIT_CONFIG_ARM_V7 && SLJIT_CONFIG_ARM_V7)
 #define BE_NAME sljitter_arm_v7
 #define BE_ARCH SLJITTER_ARCH_ARM_V7
+#define BE_RUN  NULL
 #elif (defined SLJIT_CONFIG_ARM_THUMB2 && SLJIT_CONFIG_ARM_THUMB2)
 #define BE_NAME sljitter_arm_thumb2
 #define BE_ARCH SLJITTER_ARCH_ARM_THUMB2
+#define BE_RUN  NULL
 #elif (defined SLJIT_CONFIG_ARM_64 && SLJIT_CONFIG_ARM_64)
 #define BE_NAME sljitter_arm_64
 #define BE_ARCH SLJITTER_ARCH_ARM_64
+#define BE_RUN  NULL
 #elif (defined SLJIT_CONFIG_PPC_32 && SLJIT_CONFIG_PPC_32)
 #define BE_NAME sljitter_ppc_32
 #define BE_ARCH SLJITTER_ARCH_PPC_32
+#define BE_RUN  NULL
 #elif (defined SLJIT_CONFIG_PPC_64 && SLJIT_CONFIG_PPC_64)
 #define BE_NAME sljitter_ppc_64
 #define BE_ARCH SLJITTER_ARCH_PPC_64
+#define BE_RUN  NULL
 #elif (defined SLJIT_CONFIG_MIPS_32 && SLJIT_CONFIG_MIPS_32)
 #define BE_NAME sljitter_mips_32
 #define BE_ARCH SLJITTER_ARCH_MIPS_32
+#define BE_RUN  NULL
 #elif (defined SLJIT_CONFIG_MIPS_64 && SLJIT_CONFIG_MIPS_64)
 #define BE_NAME sljitter_mips_64
 #define BE_ARCH SLJITTER_ARCH_MIPS_64
+#define BE_RUN  NULL
 #elif (defined SLJIT_CONFIG_RISCV_32 && SLJIT_CONFIG_RISCV_32)
 #define BE_NAME sljitter_riscv_32
 #define BE_ARCH SLJITTER_ARCH_RISC_32
+#define BE_RUN  NULL
 #elif (defined SLJIT_CONFIG_RISCV_64 && SLJIT_CONFIG_RISCV_64)
 #define BE_NAME sljitter_riscv_64
 #define BE_ARCH SLJITTER_ARCH_RISC_64
+#define BE_RUN  NULL
 #elif (defined SLJIT_CONFIG_S390X && SLJIT_CONFIG_S390X)
 #define BE_NAME sljitter_s390x
 #define BE_ARCH SLJITTER_ARCH_S390X
+#define BE_RUN  NULL
 #elif (defined SLJIT_CONFIG_LOONGARCH_64 && SLJIT_CONFIG_LOONGARCH_64)
 #define BE_NAME sljitter_loongarch_64
 #define BE_ARCH SLJITTER_ARCH_LOONGARCH_64
+#define BE_RUN  NULL
 #elif (defined SLJIT_CONFIG_EMULATOR && SLJIT_CONFIG_EMULATOR)
 #define BE_NAME sljitter_emulator
 #define BE_ARCH SLJITTER_ARCH_EMULATOR
+#define BE_RUN  sljit_run
 #else
 #error "architecture not defined"
 #endif
+
 
 sljitter_backend_t BE_NAME =
 {
@@ -143,4 +159,5 @@ sljitter_backend_t BE_NAME =
 
     .get_executable_offset = sljit_get_executable_offset,
     .get_generated_code_size = sljit_get_generated_code_size,
+    .run = BE_RUN,
 };

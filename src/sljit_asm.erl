@@ -116,7 +116,7 @@
 %% Assemble a file.asm into slo object binary
 -spec assemble(Filename::string()) -> {ok, binary()} | {error, term()}.
 assemble(Filename) ->
-    assemble(auto, Filename).
+    assemble(native, Filename).
 
 -spec assemble(Arch::sljit:arch(), Filename::string()) ->
 	  {ok, binary()} | {error, term()}.
@@ -140,7 +140,7 @@ assemble(Arch, Filename) ->
 -spec assemble_file(Filename::string(), DstFilename::string()) -> 
 	  ok | {error, term()}.
 assemble_file(Filename, DstFilename) ->
-    assemble_file(auto, Filename, DstFilename).
+    assemble_file(native, Filename, DstFilename).
 
 -spec assemble_file(Arch::sljit:arch(),Filename::string(), DstFilename::string()) -> 
 	  ok | {error, term()}.
@@ -460,9 +460,6 @@ disasm_ins(F, Args, St) ->
 	{Fmt,_Args} ->
 	    throw({error, {unknown_format, Fmt}})
     end.	
-    
-
-
 
 save_as_bin(Code, DstFilename) ->
     DstFilename1 = case filename:extension(DstFilename) of
@@ -472,8 +469,13 @@ save_as_bin(Code, DstFilename) ->
     Bin = sljit:get_code(Code),
     file:write_file(DstFilename1, Bin).
 
+-spec load(Filename::string()) ->
+	  {ok,binary()} | {error, Reason::term()}.
 load(Filename) ->
-    load(auto,Filename).
+    load(native,Filename).
+
+-spec load(Arch::sljit:arch(),Filename::string()) ->
+	  {ok,binary()} | {error, Reason::term()}.
 load(Arch,Filename) ->
     case filename:extension(Filename) of
 	".asm" ->
@@ -499,7 +501,7 @@ load(Arch,Filename) ->
     end.
 
 load_slo(File) ->
-    load_slo(auto,File).
+    load_slo(native,File).
 load_slo(Arch,File) ->
     case file:read_file(File) of
 	{ok, Bin} ->
@@ -934,12 +936,19 @@ dec_cmp(Test) ->
 enc_status(Test) ->
     case Test of
 	always -> ?SLJIT_JUMP;
+	%% compare
 	equal -> ?SLJIT_EQUAL;
 	not_equal -> ?SLJIT_NOT_EQUAL;
 	less -> ?SLJIT_LESS;
 	less_equal -> ?SLJIT_LESS_EQUAL;
 	greater -> ?SLJIT_GREATER;
 	greater_equal -> ?SLJIT_GREATER_EQUAL;
+	%% signed compare
+	sig_less -> ?SLJIT_SIG_LESS;
+	sig_greater_equal -> ?SLJIT_SIG_GREATER_EQUAL;
+	sig_greater -> ?SLJIT_SIG_GREATER;
+	sig_less_equal -> ?SLJIT_SIG_LESS_EQUAL;
+	%% flags
 	overflow -> ?SLJIT_OVERFLOW;
 	not_overflow -> ?SLJIT_NOT_OVERFLOW;
 	carry -> ?SLJIT_CARRY;

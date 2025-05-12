@@ -2,7 +2,7 @@
 #define __SLJITTER_BACKEND_H__
 
 typedef enum {
-    SLJITTER_ARCH_AUTO = 0,
+    SLJITTER_ARCH_UNSUPPORTED = 0,
     SLJITTER_ARCH_X86_32 = 1,
     SLJITTER_ARCH_X86_64 = 2,
     SLJITTER_ARCH_ARM_V6 = 3,
@@ -17,8 +17,14 @@ typedef enum {
     SLJITTER_ARCH_RISCV_64 = 12,
     SLJITTER_ARCH_S390X = 13,
     SLJITTER_ARCH_LOONGARCH_64 = 14,
-    SLJITTER_ARCH_EMULATOR = 15
+    SLJITTER_ARCH_EMULATOR = 254,
+    SLJITTER_ARCH_AUTO = 255,
 } sljitter_architecture_t;
+
+typedef union _sljitter_val_t {
+    sljit_sw  sw;
+    sljit_f64 f64;
+} sljitter_val_t;
 
 typedef struct _sljittter_backend_t {
     sljitter_architecture_t arch;
@@ -188,6 +194,12 @@ typedef struct _sljittter_backend_t {
 
     sljit_sw (*get_executable_offset)(struct sljit_compiler *compiler);
     sljit_uw (*get_generated_code_size)(struct sljit_compiler *compiler);
+
+    // run (emulator)
+    sljit_s32 (*run)(emulator_state_t* st,
+		     void* code, size_t code_size, void* addr,
+		     void* arg, sljit_s32 arg_types,
+		     void* ret);
     
 } sljitter_backend_t;
 

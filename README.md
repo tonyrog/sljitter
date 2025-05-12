@@ -3,4 +3,6 @@ Erlang api to sljit
 
 # Deps
 
-  libavcall1
+    https://github.com/tonyrog/sljit (emulator branch)
+  
+    libavcall1

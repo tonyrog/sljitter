@@ -44,11 +44,11 @@
     NIF("generate_code", 1, nif_generate_code) \
     NIF("unregister_code", 1, nif_unregister_code) \
     NIF("code_info",  2, nif_code_info)	 \
-    NIF("call", 1, nif_avcall) \
-    NIF("call", 2, nif_avcall) \
-    NIF("call", 3, nif_avcall) \
-    NIF("call", 4, nif_avcall) \
-    NIF("call", 5, nif_avcall) \
+    NIF("call", 1, nif_call) \
+    NIF("call", 2, nif_call) \
+    NIF("call", 3, nif_call) \
+    NIF("call", 4, nif_call) \
+    NIF("call", 5, nif_call) \
     NIF("emit_op0", 2, nif_emit_op0) \
     NIF("emit_op1", 6, nif_emit_op1) \
     NIF("emit_op2", 8, nif_emit_op2) \
@@ -104,7 +104,7 @@ DECL_ATOM(unsupported);
 DECL_ATOM(bad_argument);
 DECL_ATOM(undefined);
 // architecture
-DECL_ATOM(auto);
+DECL_ATOM(native);
 DECL_ATOM(x86_64);
 DECL_ATOM(x86_32);
 DECL_ATOM(arm_v6);
@@ -244,32 +244,28 @@ typedef struct code_t {
 typedef enum {
     TYPE_VOID     = SLJIT_ARG_TYPE_RET_VOID, // 0
     TYPE_WORD     = SLJIT_ARG_TYPE_W,        // 1
-    TYPE_WORD_R   = SLJIT_ARG_TYPE_W_R,      // 8+1    
+    TYPE_WORD_R   = SLJIT_ARG_TYPE_W_R,      // 8+1
     TYPE_WORD32   = SLJIT_ARG_TYPE_32,       // 2
-    TYPE_WORD32_R = SLJIT_ARG_TYPE_32_R,     // 8+2    
+    TYPE_WORD32_R = SLJIT_ARG_TYPE_32_R,     // 8+2
     TYPE_PTR      = SLJIT_ARG_TYPE_P,        // 3
-    TYPE_PTR_R    = SLJIT_ARG_TYPE_P_R,      // 8+3    
+    TYPE_PTR_R    = SLJIT_ARG_TYPE_P_R,      // 8+3
     TYPE_F64      = SLJIT_ARG_TYPE_F64,      // 4
     TYPE_F32      = SLJIT_ARG_TYPE_F32,      // 5
-    TYPE_TERM     = 6,                               // 6
+    TYPE_TERM     = 6,                       // 6
     TYPE_TERM_R   = (6 | SLJIT_ARG_TYPE_SCRATCH_REG) // 8+6
 } sig_type_t;
 
 #define ARGTYPE_RET(type)  ((type) & 0xf)
-#define ARGTYPE(type,i)    (((type) >> ((i)*SLJIT_ARG_SHIFT)) & 0xf)
-// 0xttttt = 4
-// 0x0tttt = 3
-// 0x00ttt = 2
-// 0x000tt = 1
-// 0x0000t = 0
-#define ARGTYPE_ARGC(type)
+#define ARGTYPE(type,i)    (((type) >> (((i)+1)*SLJIT_ARG_SHIFT)) & 0xf)
 
 // export entry jump and calls are generate from &ent->addr !
 typedef struct export_entry_t {
     volatile void* addr; // address of the function (must be top of structure)
-    ERL_NIF_TERM mod;    // the "module" part of the function name    
+    ERL_NIF_TERM mod;    // the "module" part of the function name
     ERL_NIF_TERM fun;    // the "function" part of the function name
     sljit_s32 arg_types;
+    size_t code_size;
+    sljitter_architecture_t arch;
     struct export_entry_t* next;  // next export entry (all entries)
 } export_entry_t;
 
@@ -327,9 +323,18 @@ typedef uintptr_t ptr_t;
 typedef double    float64_t;
 typedef float     float32_t;
 
+#ifndef MEMORY_SIZE
+#define MEMORY_SIZE (1*1024)  // 1k
+// #define MEMORY_SIZE (1*1024*1024)  // 1MB
+#endif
+
 typedef struct {
-    module_entry_t* mod_list;   // modules loaded
-    export_entry_t* exp_list;   // exports loaded
+    module_entry_t* mod_list;       // modules loaded
+    export_entry_t* exp_list;       // exports loaded
+    sljitter_architecture_t arch;   // native architecure
+    // maybe one emu state / memory per sceduler?
+    emulator_state_t emu;           // avoid put this on stack
+    sljit_u8 mem[MEMORY_SIZE];
 } nif_ctx_t;
 
 #if 0
@@ -436,9 +441,11 @@ export_entry_t* create_export(nif_ctx_t* ctx, ERL_NIF_TERM mod, ERL_NIF_TERM fun
     export_entry_t* xent;
     xent = enif_alloc(sizeof(export_entry_t));
     xent->addr = address_exception;
+    xent->code_size = 0;
     xent->mod = mod;
     xent->fun = fun;
     xent->arg_types = 0;
+    xent->arch = SLJITTER_ARCH_UNSUPPORTED;
     xent->next = ctx->exp_list;
     ctx->exp_list = xent;
     return xent;
@@ -621,51 +628,78 @@ static sljitter_backend_t* select_backend_by_name(const char* name)
     return (sljitter_backend_t*) dlsym((void*)0, name);
 }
 
-
-// find the backend matching the host platform
-static ERL_NIF_TERM auto_backend()
+static sljitter_architecture_t native_architecure()
 {
 #if defined(__i386__) || defined(__i386)
-    return ATOM(x86_32);
+    return SLJITTER_ARCH_X86_32;
 #elif defined(__x86_64__)
-    return ATOM(x86_64);
+    return SLJITTER_ARCH_X86_64;
 #elif defined(__aarch64__)
-    return ATOM(arm_64);
+    return SLJITTER_ARCH_ARM_64;
 #elif defined(__thumb2__)
-    return ATOM(arm_thumb2);
+    return SLJITTER_ARCH_ARM_THUMB2;
 #elif (defined(__ARM_ARCH) && __ARM_ARCH >= 7) ||			\
     ((defined(__ARM_ARCH_7__) || defined(__ARM_ARCH_7A__) || defined(__ARM_ARCH_7R__) || defined(__ARM_ARCH_7S__)) \
      || (defined(__ARM_ARCH_8A__) || defined(__ARM_ARCH_8R__)) \
      || (defined(__ARM_ARCH_9A__)))
-    return ATOM(arm_v7);
+    return SLJITTER_ARCH_ARM_V7;
 #elif defined(__arm__) || defined (__ARM__)
-    return ATOM(arm_v6);
+    return SLJITTER_ARCH_ARM_V6;
 #elif defined(__ppc64__) || defined(__powerpc64__) || (defined(_ARCH_PPC64) && defined(__64BIT__)) || (defined(_POWER) && defined(__64BIT__))
-    return ATOM(ppc_64);
+    return SLJITTER_ARCH_PPC_64;
 #elif defined(__ppc__) || defined(__powerpc__) || defined(_ARCH_PPC) || defined(_ARCH_PWR) || defined(_ARCH_PWR2) || defined(_POWER)
-    return ATOM(ppc_32);
+    return SLJITTER_ARCH_PPC_32;
 #elif defined(__mips__) && !defined(_LP64)
-    return ATOM(mips_32);
+    return SLJITTER_ARCH_MIPS_32;
 #elif defined(__mips64)
-    return ATOM(mips_64);
+    return SLJITTER_ARCH_MIPS_64;
 #elif defined (__riscv_xlen) && (__riscv_xlen == 32)
-    return ATOM(riscv_32);
+    return SLJITTER_ARCH_RISCV_32;
 #elif defined (__riscv_xlen) && (__riscv_xlen == 64)
-    return ATOM(riscv_64);
+    return SLJITTER_ARCH_RISCV_64;
 #elif defined (__loongarch_lp64)
-    return ATOM(loongarch_64);
+    return SLJITTER_ARCH_LOONGARCH_64;
 #elif defined(__s390x__)
-    return ATOM(s390x);
+    return SLJITTER_ARCH_S390X;
 #else
-    return ATOM(unsupported);
+    return SLJITTER_ARCH_UNSUPPORTED;
 #endif
+}
+
+// convert archetecture enum to atom
+static ERL_NIF_TERM architecture_name(sljitter_architecture_t arch)
+{
+    switch(arch) {
+    case SLJITTER_ARCH_X86_32: return ATOM(x86_32);
+    case SLJITTER_ARCH_X86_64: return ATOM(x86_64);
+    case SLJITTER_ARCH_ARM_V6: return ATOM(arm_v6);
+    case SLJITTER_ARCH_ARM_V7: return ATOM(arm_v7);
+    case SLJITTER_ARCH_ARM_THUMB2: return ATOM(arm_thumb2);
+    case SLJITTER_ARCH_ARM_64: return ATOM(arm_64);
+    case SLJITTER_ARCH_PPC_32: return ATOM(ppc_32);
+    case SLJITTER_ARCH_PPC_64: return ATOM(ppc_64);
+    case SLJITTER_ARCH_MIPS_32: return ATOM(mips_32);
+    case SLJITTER_ARCH_MIPS_64: return ATOM(mips_64);
+    case SLJITTER_ARCH_RISCV_32: return ATOM(riscv_32);
+    case SLJITTER_ARCH_RISCV_64: return ATOM(riscv_64);
+    case SLJITTER_ARCH_S390X: return ATOM(s390x);
+    case SLJITTER_ARCH_LOONGARCH_64: return ATOM(loongarch_64);
+    case SLJITTER_ARCH_EMULATOR: return ATOM(emulator);
+    default: return ATOM(unsupported);
+    }
+}
+
+// find the backend matching the host platform
+static ERL_NIF_TERM native_backend_name()
+{
+    return architecture_name(native_architecure());
 }
 
 static sljitter_backend_t* select_backend(ERL_NIF_TERM name)
 {
     int i;
-    if (name == ATOM(auto))
-	name = auto_backend();
+    if (name == ATOM(native))
+	name = native_backend_name();
     for (i = 0; backend_list[i].name != NULL; i++) {
 	if (name == *(backend_list[i].atm)) 
 	    return select_backend_by_name(backend_list[i].name);
@@ -683,7 +717,7 @@ ERL_NIF_TERM nif_has_cpu_feature(ErlNifEnv* env, int argc,
     sljitter_backend_t* bep;
     
     if (argc == 0)
-	name = auto_backend();
+	name = native_backend_name();
     else {
 	if (!enif_is_atom(env, argv[1]))
 	    return EXCP_BADARG_N(env, 1, "not a architecture name");
@@ -716,7 +750,7 @@ ERL_NIF_TERM nif_create_compiler(ErlNifEnv* env, int argc,
     sljitter_backend_t* bep;
 
     if (argc == 0)
-	bep = select_backend(ATOM(auto));
+	bep = select_backend(ATOM(native));
     else
 	bep = select_backend(argv[0]);
    
@@ -778,8 +812,10 @@ ERL_NIF_TERM nif_function(ErlNifEnv* env, int argc,
     if ((ment = cp->ment) == NULL) // this is the module entry in compiler
     	return EXCP_BADARG_N(env, 0, "no module");
 
-    if ((xent = lookup_export(get_ctx(env), ment->mod, argv[1])) == NULL)
+    if ((xent = lookup_export(get_ctx(env), ment->mod, argv[1])) == NULL) {
 	xent = create_export(get_ctx(env), ment->mod, argv[1]);
+	xent->arch = cp->backend->arch;
+    }
 
     xlink = create_export_link(xent);
     xlink->next = cp->exp_list;  // link into compilers export list
@@ -878,6 +914,12 @@ ERL_NIF_TERM nif_get_platform_name(ErlNifEnv* env, int argc,
     return list;
 }
 
+// 0xttttt = 4
+// 0x0tttt = 3
+// 0x00ttt = 2
+// 0x000tt = 1
+// 0x0000t = 0
+
 static int arg_types_argc(sljit_s32 arg_types)
 {
     if (arg_types & 0x70000) return 4;
@@ -942,6 +984,7 @@ ERL_NIF_TERM nif_generate_code(ErlNifEnv* env, int argc,
     crp->exp_list    = NULL;
     crp->addr_list = cp->addr_list;
     ment = cp->ment;
+    DBG("code = %p\r\n", (void*)crp->addr);
     DBG("exec_offset = %p\r\n", crp->exec_offset);
     DBG("code_size = %ld\r\n", crp->code_size);
     
@@ -1187,10 +1230,106 @@ ERL_NIF_TERM nif_code_info(ErlNifEnv* env, int argc,
 		return EXCP_BADARG_N(env, 1, "not arg index (1..4)");
 	    if (index > arg_types_argc(xent->arg_types))
 		return ATOM(undefined);
-	    return make_type(env, ARGTYPE(xent->arg_types,index));
+	    return make_type(env, ARGTYPE(xent->arg_types,index-1));
 	}
     }
     return EXCP_BADARG_N(env, 1, "unknown info");
+}
+
+
+ERL_NIF_TERM emulator_call(ErlNifEnv* env, code_t* crp,
+			   export_entry_t* xent,
+			   int argc, const ERL_NIF_TERM* argv)
+{
+    sljitter_val_t ret;
+    sljitter_val_t arg[4];
+    ErlNifBinary bin[4];
+    nif_ctx_t* ctx = get_ctx(env);
+    emulator_state_t* st = &ctx->emu;
+    sljit_s32 arg_types = xent->arg_types;
+    sljit_uw dp = 0; // data pointer
+    int i;
+
+    // setup thread context, preserve registers...?
+    memset(st, 0, sizeof(emulator_state_t));
+    st->flags = 0;
+    st->mem_size = MEMORY_SIZE;
+    st->mem_base = ctx->mem;
+
+    // parse all arguments
+    for (i = 0; i < argc; i++) {
+	switch(ARGTYPE(arg_types, i)) {
+	case TYPE_TERM:
+	case TYPE_TERM_R:
+	    arg[i].sw = (sljit_sw) argv[i];
+	    break;
+	case TYPE_WORD:
+	case TYPE_WORD_R:
+	    if (!get_sw(env, argv[i], &arg[i].sw))
+		return EXCP_BADARG_N(env, i, "not an integer");
+	    break;
+	case TYPE_WORD32:
+	case TYPE_WORD32_R: {
+	    sljit_s32 val;
+	    if (!get_s32(env, argv[i], &val))
+		return EXCP_BADARG_N(env, i, "not an integer");
+	    arg[i].sw = val;
+	    break;
+	}
+	case TYPE_PTR:
+	case TYPE_PTR_R:
+	    if (!enif_inspect_iolist_as_binary(env, argv[i], &bin[i]))
+		return EXCP_BADARG_N(env, i, "not an iolist");
+	    // copy binary to "sandboxed" memory
+	    arg[i].sw = dp;  // pass address in memory
+	    enif_fprintf(stderr, "copy dst=%p, src=%p, size=%ld\r\n",
+			 st->mem_base+dp, bin[i].data, bin[i].size);
+	    memcpy(st->mem_base+dp, bin[i].data, bin[i].size);
+	    dp += bin[i].size;
+	    // align to next word address
+	    dp = (dp + (sizeof(sljit_uw)-1)) & ~(sizeof(sljit_uw)-1);
+	    break;
+	case TYPE_F64:
+	    if (!enif_get_double(env, argv[i], &arg[i].f64))
+		return EXCP_BADARG_N(env, i+1, "not a float");
+	    break;
+	case TYPE_F32: {
+	    float val32;
+	    if (!get_float(env, argv[i], &val32))
+		return EXCP_BADARG_N(env, i, "not a float");
+	    arg[i].f64 = val32;
+	    break;
+	}
+	default:
+	    return EXCP_BADARG_N(env, i, "internal error");
+	}
+    }
+
+    if (crp->backend->run) {
+	(crp->backend->run)(&ctx->emu, crp->addr, crp->code_size,
+			    (void*) xent->addr,
+			    (void*) &arg[0], arg_types, (void*) &ret);
+    }
+
+    switch(ARGTYPE_RET(arg_types)) {
+    case TYPE_VOID:
+	return ATOM(ok);
+    case TYPE_TERM:
+    case TYPE_TERM_R:
+	return (ERL_NIF_TERM) ret.sw;
+    case TYPE_WORD:
+    case TYPE_WORD_R:
+	return make_sw(env, ret.sw);
+    case TYPE_WORD32:
+    case TYPE_WORD32_R:	
+	return make_s32(env, ret.sw);	
+    case TYPE_F32:
+	return enif_make_double(env, ret.f64);
+    case TYPE_F64:
+	return enif_make_double(env, ret.f64);
+    default:
+	return ATOM(undefined);
+    }            
 }
 
 #include <avcall.h>
@@ -1199,31 +1338,20 @@ typedef union code_val {
     sljit_sw  sw;
     sljit_s32 s32;
     void*     ptr;
-    double    f64;
-    float     f32;
-    ErlNifBinary bin;
+    sljit_f64 f64;
+    sljit_f32 f32;
 } code_val_t;
 
-
-ERL_NIF_TERM nif_avcall(ErlNifEnv* env, int argc,
-			const ERL_NIF_TERM argv[])
+// call native code using avcall
+ERL_NIF_TERM native_call(ErlNifEnv* env, export_entry_t* xent,
+			 int argc, const ERL_NIF_TERM* argv)
 {
     code_val_t ret;
     code_val_t arg[4];
-    export_entry_t* xent = NULL;
-    code_t* crp = NULL;
+    ErlNifBinary bin[4];
     int i;
     av_alist alist;
 
-    if (!get_export(env, argv[0], &xent, &crp))
-	return EXCP_BADARG_N(env, 0, "not code");
-    
-    if (xent->addr == address_exception)
-	return EXCP_BADARG_N(env, 0, "not loaded");
-    if (arg_types_argc(xent->arg_types) != argc-1)
-	return EXCP_BADARG_N(env, 0, "wrong number of arguments");
-
-    DBG("check return type\r\n");
     switch (ARGTYPE_RET(xent->arg_types)) {
     case TYPE_VOID:
 	av_start_void(alist, xent->addr);
@@ -1250,39 +1378,38 @@ ERL_NIF_TERM nif_avcall(ErlNifEnv* env, int argc,
     }
     
     // parse all arguments
-    for (i = 0; i < argc-1; i++) {
-	DBG("parse arguments %d\r\n", i);
-	switch(ARGTYPE(xent->arg_types, i+1)) {
+    for (i = 0; i < argc; i++) {
+	switch(ARGTYPE(xent->arg_types, i)) {
 	case TYPE_TERM:
 	case TYPE_TERM_R:
-	    arg[i].sw = (sljit_sw) argv[i+1];
+	    arg[i].sw = (sljit_sw) argv[i];
 	    av_long(alist, (long) arg[i].sw);
 	    break;
 	case TYPE_WORD:
-	case TYPE_WORD_R:	    
-	    if (!get_sw(env, argv[i+1], &arg[i].sw))
-		return EXCP_BADARG_N(env, i+1, "not an integer");
+	case TYPE_WORD_R:
+	    if (!get_sw(env, argv[i], &arg[i].sw))
+		return EXCP_BADARG_N(env, i, "not an integer");
 	    av_long(alist, (long) arg[i].sw);
 	    break;
 	case TYPE_WORD32:
 	case TYPE_WORD32_R:	    
-	    if (!get_s32(env, argv[i+1], &arg[i].s32))
-		return EXCP_BADARG_N(env, i+1, "not an integer");
+	    if (!get_s32(env, argv[i], &arg[i].s32))
+		return EXCP_BADARG_N(env, i, "not an integer");
 	    av_int(alist, (int) arg[i].s32);
 	    break;
 	case TYPE_PTR:
 	case TYPE_PTR_R:
-	    if (!enif_inspect_iolist_as_binary(env, argv[i+1], &arg[i].bin))
-		return EXCP_BADARG_N(env, i+1, "not an iolist");
-	    av_ptr(alist, void*, arg[i].bin.data);
+	    if (!enif_inspect_iolist_as_binary(env, argv[i], &bin[i]))
+		return EXCP_BADARG_N(env, i, "not an iolist");
+	    av_ptr(alist, void*, bin[i].data);
 	    break;
 	case TYPE_F64:
-	    if (!enif_get_double(env, argv[i+1], &arg[i].f64))
-		return EXCP_BADARG_N(env, i+1, "not a float");
+	    if (!enif_get_double(env, argv[i], &arg[i].f64))
+		return EXCP_BADARG_N(env, i, "not a float");
 	    av_double(alist, arg[i].f64);
 	    break;
 	case TYPE_F32:
-	    if (!get_float(env, argv[i+1], &arg[i].f32))
+	    if (!get_float(env, argv[i], &arg[i].f32))
 		return EXCP_BADARG_N(env, i+1, "not a float");
 	    av_float(alist, (float) arg[i].f32);	    
 	    break;
@@ -1290,10 +1417,9 @@ ERL_NIF_TERM nif_avcall(ErlNifEnv* env, int argc,
 	    return EXCP_BADARG_N(env, i+1, "internal error");
 	}
     }
-    DBG("call function\r\n");
+
     av_call (alist);
 
-    DBG("handle reply\r\n");    
     switch(ARGTYPE_RET(xent->arg_types)) {
     case TYPE_VOID:
 	return ATOM(ok);
@@ -1312,7 +1438,32 @@ ERL_NIF_TERM nif_avcall(ErlNifEnv* env, int argc,
 	return enif_make_double(env, ret.f64);
     default:
 	return ATOM(undefined);
-    }    
+    }        
+}
+
+
+ERL_NIF_TERM nif_call(ErlNifEnv* env, int argc,
+		      const ERL_NIF_TERM argv[])
+{
+    export_entry_t* xent = NULL;
+    code_t* crp = NULL;
+    nif_ctx_t* ctx = get_ctx(env);
+
+    if (!get_export(env, argv[0], &xent, &crp))
+	return EXCP_BADARG_N(env, 0, "not code");
+    if (xent->addr == address_exception)
+	return EXCP_BADARG_N(env, 0, "not loaded");
+    if (arg_types_argc(xent->arg_types) != argc-1)
+	return EXCP_BADARG_N(env, 0, "wrong number of arguments");
+
+    enif_fprintf(stderr, "crp = %p\r\n", crp);
+    enif_fprintf(stderr, "crp->backend = %p\r\n", crp->backend);
+    enif_fprintf(stderr,"crp->backend->arch = %p\r\n", crp->backend->arch);
+    if (crp->backend->arch == ctx->arch) // native code
+	return native_call(env, xent, argc-1, &argv[1]);
+    else if (crp->backend->arch == SLJITTER_ARCH_EMULATOR)
+	return emulator_call(env, crp, xent, argc-1, &argv[1]);
+    return EXCP_BADARG_N(env, 0, "wrong architecture");
 }
 
 ERL_NIF_TERM nif_emit_op0(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
@@ -1887,9 +2038,10 @@ ERL_NIF_TERM nif_emit_mjump(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     if (!enif_is_atom(env, argv[3]))
 	return EXCP_BADARG_N(env, 3, "not an atom");
 
-    if ((xent = lookup_export(get_ctx(env), argv[2], argv[3])) == NULL)
+    if ((xent = lookup_export(get_ctx(env), argv[2], argv[3])) == NULL) {
 	xent = create_export(get_ctx(env), argv[2], argv[3]);
-    
+	xent->arch = cp->backend->arch;
+    }
     ret = (cp->backend->emit_ijump)(cp->compiler, type, SLJIT_MEM0(), (sljit_sw) xent);
     return nif_return(env, ret);
 }
@@ -1944,6 +2096,7 @@ ERL_NIF_TERM nif_emit_mcall(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     if ((xent = lookup_export(get_ctx(env), argv[3], argv[4])) == NULL) {
 	xent = create_export(get_ctx(env), argv[3], argv[4]);
 	xent->arg_types = arg_types;  // hint!
+	xent->arch = cp->backend->arch;
     }
     DBG("mcall: %T:%T type=%x, argtypes=%x, addr=%p",
 	xent->mod, xent->fun, type, arg_types, (void*) xent);
@@ -2218,7 +2371,7 @@ ERL_NIF_TERM nif_set_constant(ErlNifEnv* env, int argc,
     }
     (crp->backend->set_const)(ap->addr, ap->cnst->op, new_constant,
 			      crp->exec_offset);
-    return ATOM(ok);	
+    return ATOM(ok);
     
 }
 
@@ -2391,7 +2544,7 @@ static void load_atoms(ErlNifEnv* env)
     LOAD_ATOM(bad_argument);
     LOAD_ATOM(undefined);
     // architecture
-    LOAD_ATOM(auto);    
+    LOAD_ATOM(native);    
     LOAD_ATOM(x86_64);
     LOAD_ATOM(x86_32);
     LOAD_ATOM(arm_v6);
@@ -2503,6 +2656,7 @@ static void load_cfunc(nif_ctx_t* ctx, ERL_NIF_TERM mod, ERL_NIF_TERM fun,
     xent = create_export(ctx, mod, fun);
     xent->addr = addr;
     xent->arg_types = arg_types;
+    xent->arch = ctx->arch; // native arch
 }
 		       
 
@@ -2578,10 +2732,12 @@ static int sljit_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
 	return -1;
     ctx->mod_list = NULL;
     ctx->exp_list = NULL;
+    ctx->arch = native_architecure();
     load_atoms(env);
 
     load_built_ins(ctx);
-    
+
+    fprintf(stderr, "load: ctx = %p\r\n", ctx);    
     *priv_data = ctx;
     return 0;
 }
