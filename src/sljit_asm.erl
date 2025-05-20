@@ -1041,7 +1041,7 @@ make_jump_(Compile, [], JSrc, T) when is_integer(T) ->
     set_jump_name(Compile, JSrc),
     Jump = emit(Compile, jump, [dynamic_jump(JSrc, T)]),
     set_jump_src(Compile,JSrc,Jump);
-	    
+
 make_jump_(Compile, [Option|Options], JSrc, Condition) ->
     case Option of
 	{from, JSrc1} when is_atom(JSrc1) ->

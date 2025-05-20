@@ -2989,7 +2989,7 @@ static int sljit_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
 
     load_built_ins(ctx);
 
-    fprintf(stderr, "load: ctx = %p\r\n", ctx);    
+    DBG("load: ctx = %p\r\n", ctx);    
     *priv_data = ctx;
     return 0;
 }

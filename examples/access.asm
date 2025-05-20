@@ -3,14 +3,13 @@
 {module, access}.
 {function, all}.
 
-{enter, [], void, [word,word,word], [{reg,3}], [], 0}.
+{enter, [], word, [ptr,word], [{reg,1}], [{reg,2}], 0}.
 
-{mov, r0, 10}.
-{mov, r0, r1}.
-{mov, r0, {mem,12}}.
-{mov, r0, {mem,r1}}.
-{mov, r0, {mem,r1,12}}.
-{mov, r0, {mem,r1,r2}}.
-{mov, r0, {mem,r1,r2,2}}.
+{mov, r0, 1}.
+{'or', r0, r0, s1}.
+{'or', r0, r0, {mem,s0}}.
+{'or', r0, r0, {mem,s0,8}}.
+{'or', r0, r0, {mem,s0,s1}}.
+{'or', r0, r0, {mem,s0,s1,1}}.
 
 {return, mov, r0}.

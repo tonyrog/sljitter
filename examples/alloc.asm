@@ -3,7 +3,8 @@
 {module, alloc}.
 {function, add}.
 
-{enter, [], word, [word], [], [{reg,2}], 64}. %% 8 64-bit words
+%%{enter, [], word, [word], [{reg,3}], [], 64}. %% 8 64-bit words
+{enter, [], word, [word], [{reg,1}], [{reg,3}], 64}. %% 8 64-bit words
 
 {mov, {mem,sp,0},  100}.
 {mov, {mem,sp,8},  200}.
@@ -14,18 +15,17 @@
 {mov, {mem,sp,48}, 700}.
 {mov, {mem,sp,56}, 800}.
 
-{mov, s0, r0}.
-{mov, s1, r0}.
-{add, s0, s0, {mem,sp,0}}.
-{add, s0, s0, {mem,sp,8}}.
-{add, s0, s0, {mem,sp,16}}.
-{add, s0, s0, {mem,sp,24}}.
-{add, s1, s1, {mem,sp,32}}.
-{add, s1, s1, {mem,sp,40}}.
-{add, s1, s1, {mem,sp,48}}.
-{add, s1, s1, {mem,sp,56}}.
+{mov, s1, s0}.
+{mov, s2, s0}.
+{add, s1, s1, {mem,sp,0}}.
+{add, s1, s1, {mem,sp,8}}.
+{add, s1, s1, {mem,sp,16}}.
+{add, s1, s1, {mem,sp,24}}.
+{add, s2, s2, {mem,sp,32}}.
+{add, s2, s2, {mem,sp,40}}.
+{add, s2, s2, {mem,sp,48}}.
+{add, s2, s2, {mem,sp,56}}.
 
-{add, s0, s0, s1}.
-{mov, r0, s0}.
-
+{add, s1, s1, s2}.
+{mov, r0, s1}.
 {return, mov, r0}.

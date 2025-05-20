@@ -68,11 +68,11 @@
 #define BE_RUN  NULL
 #elif (defined SLJIT_CONFIG_RISCV_32 && SLJIT_CONFIG_RISCV_32)
 #define BE_NAME sljitter_riscv_32
-#define BE_ARCH SLJITTER_ARCH_RISC_32
+#define BE_ARCH SLJITTER_ARCH_RISCV_32
 #define BE_RUN  NULL
 #elif (defined SLJIT_CONFIG_RISCV_64 && SLJIT_CONFIG_RISCV_64)
 #define BE_NAME sljitter_riscv_64
-#define BE_ARCH SLJITTER_ARCH_RISC_64
+#define BE_ARCH SLJITTER_ARCH_RISCV_64
 #define BE_RUN  NULL
 #elif (defined SLJIT_CONFIG_S390X && SLJIT_CONFIG_S390X)
 #define BE_NAME sljitter_s390x
