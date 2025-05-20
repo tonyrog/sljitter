@@ -26,11 +26,25 @@ typedef union _sljitter_val_t {
     sljit_f64 f64;
 } sljitter_val_t;
 
+typedef struct _sljitter_backend_info_t {
+    sljit_sw number_of_registers;
+    sljit_sw number_of_scratch_registers;
+    sljit_sw number_of_saved_registers;
+    sljit_sw number_of_float_registers;
+    sljit_sw number_of_saved_float_registers;
+    sljit_sw number_of_vector_registers;
+    sljit_sw number_of_saved_vector_registers;
+    sljit_sw return_reg;
+    sljit_sw sp_reg;
+    sljit_sw vsize;
+} sljitter_backend_info_t;
+
 typedef struct _sljittter_backend_t {
     sljitter_architecture_t arch;
+    sljitter_backend_info_t info;
     const char* (*get_platform_name)(void);
     sljit_s32 (*has_cpu_feature)(sljit_s32 feature_type);
-    
+
     struct sljit_compiler* (*create_compiler)(void* allocator_data);
     void (*free_compiler)(struct sljit_compiler *compiler);    
     sljit_s32 (*emit_op0)(struct sljit_compiler *compiler, sljit_s32 op);

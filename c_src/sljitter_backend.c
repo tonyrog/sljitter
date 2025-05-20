@@ -90,14 +90,25 @@
 #error "architecture not defined"
 #endif
 
-
 sljitter_backend_t BE_NAME =
 {
     .arch = BE_ARCH,
+    .info.number_of_registers = SLJIT_NUMBER_OF_REGISTERS,
+    .info.number_of_scratch_registers = SLJIT_NUMBER_OF_SCRATCH_REGISTERS,
+    .info.number_of_saved_registers = SLJIT_NUMBER_OF_SAVED_REGISTERS,
+    .info.number_of_float_registers = SLJIT_NUMBER_OF_FLOAT_REGISTERS,
+    .info.number_of_saved_float_registers = SLJIT_NUMBER_OF_SAVED_FLOAT_REGISTERS,
+    .info.number_of_vector_registers = SLJIT_NUMBER_OF_VECTOR_REGISTERS,
+    .info.number_of_saved_vector_registers = SLJIT_NUMBER_OF_SAVED_VECTOR_REGISTERS,
+    .info.return_reg = SLJIT_R0,
+    .info.sp_reg = SLJIT_SP,
+    .info.vsize = VSIZE,
+    
     .get_platform_name = sljit_get_platform_name,
     .has_cpu_feature = sljit_has_cpu_feature,
+    
     .create_compiler = sljit_create_compiler,
-    .free_compiler = sljit_free_compiler,    
+    .free_compiler = sljit_free_compiler,
     .emit_op0 = sljit_emit_op0,
     .emit_op1 = sljit_emit_op1,
     .emit_op2 = sljit_emit_op2,

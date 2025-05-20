@@ -14,7 +14,7 @@
 -define(FMT_OP2,    3).
 -define(FMT_OP2U,   4).
 -define(FMT_OP2R,   5).
--define(FMT_SI,     6).
+-define(FMT_SHIFT_INTO, 6).
 -define(FMT_OP_SRC, 7).
 -define(FMT_OP_DST, 8).
 -define(FMT_FOP1,   9).
@@ -77,7 +77,7 @@
 	?FMT_NAME(op2, ?FMT_OP2)
 	?FMT_NAME(op2u, ?FMT_OP2U)
 	?FMT_NAME(op2r, ?FMT_OP2R)
-	?FMT_NAME(shift_into, ?FMT_SI)
+	?FMT_NAME(shift_into, ?FMT_SHIFT_INTO)
 	?FMT_NAME(op_src, ?FMT_OP_SRC)
 	?FMT_NAME(op_dst, ?FMT_OP_DST)
 	?FMT_NAME(fop1, ?FMT_FOP1)

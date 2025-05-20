@@ -16,19 +16,31 @@
 -export([asm_ins_list/3, asm_ins/3]).
 -export([slo_ins_list/3, slo_ins/3]).
 
+-type imm() :: sljit:imm().
+%%-type mem() :: sljit:mem().
+-type reg() :: sljit:reg().
+-type freg() :: sljit:freg().
+-type vreg() :: sljit:vreg().
+
+-type src() :: sljit:src().
+-type dst() :: sljit:dst().
+
+-type fsrc() :: sljit:fsrc().
+-type fdst() :: sljit:fdst().
+
+-type vsrc() :: sljit:vsrc().
+-type vdst() :: sljit:vdst().
+
+
 %% debug
--export([encode_fmt_arg/1, decode_fmt_arg/1]).
--export([encode_fmt_args/2, decode_fmt_args/2]).
 -compile(export_all).
 
 -include("../include/sljit.hrl").
 -include("../include/sljit_asm.hrl").
 
--define(dbg(Fmt, Args), io:format(Fmt, Args)).
-%%
-%% operation variants = .32 .nz
-%% .u8, .u16, .u32, uw, .s8, .s16, .s32, sw
-%% 
+%% -define(dbg(Fmt, Args), io:format(Fmt, Args)).
+-define(dbg(Fmt, Args), ok).
+
 -type op0() :: breakpoint | nop | lmul_uw | lmul_sw | divmod_uw |
 	       divmod_u32 | divmod_sw | divmod_s32 | div_uw |
 	       div_u32 | div_sw | div_s32 | memory_barrier |
@@ -51,16 +63,13 @@
 
 -type op_shift_into() ::
 	shl | shl32 | mshl | mshl32 | lshr | lshr32 |
-	mlshr | mlshr32 | lshr | lshr32 |
-	shl_nz | shl32_nz | mshl_nz | mshl32_nz | lshr_nz | lshr32_nz |
-	mlshr_nz | mlshr32_nz | lshr_nz | lshr32_nz.
+	mlshr | mlshr32 | lshr | lshr32.
 
 -type op_src() :: fast_return | skip_frames_before_fast_return |
 		  prefetch_l1 | prefetch_l2 | prefetch_l3 | prefetch_once.
 
 -type op_dst() :: fast_enter | get_return_address.
 
-%% suffix .f64 .f32
 -type fop1() :: mov_f64 | mov_f32 | conv_f64_from_f32 | conv_f32_from_f64 |
 		conv_sw_from_f64 | conv_sw_from_f32 | conv_s32_from_f64 |
 		conv_s32_from_f32 | conv_f64_from_sw | conv_f32_from_sw |
@@ -78,38 +87,8 @@
 
 -type simd_op2() :: vand | vor | vxor | shuffle.
 
--type scratch_reg() :: r0 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 |
-		       r10 | r11 | r12 | r13 | r14 | r15 | {r, 0..255}.
--type saved_reg() :: s0 | s1 | s2 | s3 | s4 | s5 | s6 | s7 | s8 | s9 |
-		     s10 | s11 | s12 | s13 | s14 | s15 | {s, 0..255}.
--type reg() :: scratch_reg() | saved_reg().
-
--type float_reg() :: 
-	fr0 | fr1 | fr2 | fr3 | fr4 | fr5 | fr6 | fr7 | fr8 | fr9 |
-	fr10 | fr11 | fr12 | fr13 | fr14 | fr15 | {fr, 0..255}.
--type float_saved_reg() ::
-	fs0 | fs1 | fs2 | fs3 | fs4 | fs5 | fs6 | fs7 | fs8 | fs9 |
-	fs10 | fs11 | fs12 | fs13 | fs14 | fs15 | {fs, 0..255}.
--type freg() :: float_reg() | float_saved_reg().
-
--type vec_reg() :: vr0 | vr1 | vr2 | vr3 | vr4 | vr5 | vr6 | vr7 | vr8 | vr9 |
-		   vr10 | vr11 | vr12 | vr13 | vr14 | vr15 | {vr, 0..255}.
--type vec_saved_reg() ::
-	vs0 | vs1 | vs2 | vs3 | vs4 | vs5 | vs6 | vs7 | vs8 | vs9 | 
-	vs10 | vs11 | vs12 | vs13 | vs14 | vs15 | {vs, 0..255}.
--type vreg() :: vec_reg() | vec_saved_reg().
-
--type mem() :: {mem, integer()} |              %% [imm]
-	       {mem, reg()} |                  %% [reg]
-	       {mem, reg(), integer()} |       %% [reg + imm]
-	       {mem, reg(), reg()} |           %% [reg + reg]
-	       {mem, reg(), reg(), integer()}. %% [reg + (reg<<imm)]
-
--type imm() :: {imm, integer() | float()}.
-
 -export_type([op0/0, op1/0, op2/0, op2r/0, op_shift_into/0, op_src/0, op_dst/0]).
 -export_type([fop1/0, fop2/0, fop2r/0, op_fcopy/0, simd_op2/0]).
--export_type([vec_reg/0, vec_saved_reg/0, vreg/0]).
 
 -define(test_flag(F, X), ((X) band (F)) =:= (F)).
 
@@ -197,7 +176,6 @@ assemble_list(Arch,Instructions,Filename) when is_list(Instructions) ->
     {ok,Bin} = assemble_list(Arch,Instructions),
     file:write_file(Filename, Bin).
 
-
 disasm(Filename) ->
     disasm(Filename, undefined, []).
 disasm(Filename, Output) ->
@@ -231,8 +209,8 @@ disasm_object(<<>>, _St, _Fd, ok) ->
 disasm_object(<<>>, _St, _Fd, Acc) ->
     {ok, lists:reverse(Acc)};
 disasm_object(<<Sz, Data:Sz/binary, Rest/binary>>, St, Out, Acc) ->
-    <<F, Args/binary>> = Data,
-    case disasm_ins(F, Args, St) of
+    {Ins0,Sz} = binary_to_term(Data, [used]),
+    case disasm_ins(Ins0, St) of
 	{nop, St1} ->
 	    disasm_object(Rest, St1, Out, Acc);
 	{Ins, St1} ->
@@ -253,8 +231,6 @@ print_object(Ins, Fd) ->
 	label -> io:format(Fd, "~p.\n", [Ins]);
 	_ -> io:format(Fd, "  ~p.\n", [Ins])
     end.
-
-
 
 -undef(OP0_NAME).
 -define(OP0_NAME(I, N), N -> I; ).
@@ -286,177 +262,187 @@ print_object(Ins, Fd) ->
 -undef(OP_FCOPY_NAME).
 -define(OP_FCOPY_NAME(I, N), N -> I; ).
 
--undef(OP_SI_NAME).
--define(OP_SI_NAME(I, N), N -> I; ).
+-undef(OP_SHIFT_INTO_NAME).
+-define(OP_SHIFT_INTO_NAME(I, N), N -> I; ).
 
 -undef(SIMD_OP2_NAME).
 -define(SIMD_OP2_NAME(I, N), N -> I; ).
 
-disasm_ins(F, Args, St) ->
-    case load_ins(F, Args) of
-	{?FMT_MODULE, [Mod]} ->
-	    {{module,list_to_atom(Mod)}, St};
-	{?FMT_FUNCTION, [Fun]} ->
-	    {{function,list_to_atom(Fun)},St};
-	{?FMT_LABEL_NAME, [Name]} ->
-	    %% ?dbg("label_name = ~p\n", [Name]),
+disasm_ins(Slo, St) ->
+    case Slo of
+	{label_name,[Name]} ->
 	    {nop, St#{label_name => Name}};
-	{?FMT_JUMP_NAME, [Name]} ->
-	    %% ?dbg("jump_name = ~p\n", [Name]),
+	{jump_name,[Name]} ->
 	    {nop, St#{jump_name => Name}};
-	{?FMT_CONST_NAME, [Name]} ->
-	    %% ?dbg("const_name = ~p\n", [Name]),
+	{const_name,[Name]} ->
 	    {nop, St#{const_name => Name}};
-	{?FMT_OP0,[Op]} -> 
-	    Name = case Op of
-		       ?OP0_LIST
-		       _ -> throw({error, {unknown_op, Op}})
-		   end,
-	    {{Name}, St};
-	{?FMT_OP1, [Op, Dst, Dstw, Src, Srcw]} ->
-	    Name = case Op of
-		       ?OP1_LIST
-		       _ -> throw({error, {unknown_op, Op}})
-		   end,
-	    {{Name,ddst(Dst,Dstw),dsrc(Src,Srcw)},St};
-	{?FMT_OP2, [Op, Dst, Dstw, Src1, Src1w, Src2, Src2w]} ->
-	    Name = case Op of
-		       ?OP2_LIST
-		       _ -> throw({error, {unknown_op, Op}})
-		   end,
-	    {{Name,ddst(Dst,Dstw),dsrc(Src1,Src1w),dsrc(Src2,Src2w)},St};
-	{?FMT_OP2U, [Op, Src1, Src1w, Src2, Src2w]} ->
-	    Name = case Op of
-		       ?OP2_LIST
-		       _ -> throw({error, {unknown_op, Op}})
-		   end,
-	    {{Name,dsrc(Src1,Src1w),dsrc(Src2,Src2w)},St};
-	{?FMT_OP2R, [Op, DR, Src1, Src1w, Src2, Src2w]} ->
-	    Name = case Op of
-		       ?OP2R_LIST
-		       _ -> throw({error, {unknown_op, Op}})
-		   end,
-	    {{Name,dreg(DR),dsrc(Src1,Src1w),dsrc(Src2,Src2w)},St};
-	{?FMT_SI, [Op, Dst, Src1, Src2, Src3, Src3w]} ->
-	    Name = case Op of
-		       ?OP_SI_LIST
-		       _ -> throw({error, {unknown_op, Op}})
-		   end,
-	    {{Name,dreg(Dst),dreg(Src1),dreg(Src2),dsrc(Src3,Src3w)},St};
-	{?FMT_OP_SRC, [Op,Src,Srcw]} ->
-	    Name = case Op of
-		       ?OP_SRC_LIST
-		       _ -> throw({error, {unknown_op, Op}})
-		   end,
-	    {{Name,dsrc(Src,Srcw)},St};
-	{?FMT_OP_DST, [Op,Dst,Dstw]} ->
-	    Name = case Op of
-		       ?OP_DST_LIST
-		       _ -> throw({error, {unknown_op, Op}})
-		   end,
-	    {{Name,ddst(Dst,Dstw)},St};
-	{?FMT_FOP1, [Op, Dst, Dstw, Src, Srcw]} ->
-	    Name = case Op of
-		       ?FOP1_LIST
-		       _ -> throw({error, {unknown_fop, Op}})
-		   end,
-	    {{Name, dfdst(Dst,Dstw), dfsrc(Src, Srcw)},St};
-	{?FMT_FOP2, [Op, Dst, Dstw, Src1, Src1w, Src2, Src2w]} ->
-	    Name = case Op of
-		       ?FOP2_LIST
-		       _ -> throw({error, {unknown_fop, Op}})
-		   end,
-	    {{Name, dfdst(Dst,Dstw), dfsrc(Src1,Src1w),dfsrc(Src2,Src2w)},St};
-	{?FMT_FOP2R, [Op, DR, Src1, Src1w, Src2, Src2w]} ->
-	    Name = case Op of
-		       ?FOP1_LIST
-		       _ -> throw({error, {unknown_fop, Op}})
-		   end,
-	    {{Name, dfreg(DR), dfsrc(Src1,Src1w),dfsrc(Src2, Src2w)}, St};
-	{?FMT_FSET32, [FReg, Value]} ->
-	    {{fset32, dfreg(FReg), Value}, St};
-	{?FMT_FSET64, [FReg, Value]} ->
-	    {{fset64, dfreg(FReg), Value}, St};
-	{?FMT_FCOPY, [Op,FReg,Reg]} ->
-	    {{Op,dfreg(FReg),dfreg(Reg)},St};
-	{?FMT_LABEL, []} -> 
+	{module,[Name]} ->
+	    {{module, Name}, St};
+	{function,[Name]} ->
+	    {{function,Name},St};
+	{op0,[Op]} -> 
+	    OpName = case Op of
+		?OP0_LIST
+		_ -> throw({error, {unknown_op, Op}})
+	    end,
+	    {{OpName}, St};
+	{op1,[Op,D,S]} ->
+	    OpName = case Op of
+		?OP1_LIST
+		_ -> throw({error, {unknown_op, Op}})
+	    end,
+	    {{OpName,D,S},St};
+	{op2,[Op,D,S1,S2]} ->
+	    OpName = 
+		case Op of
+		    ?OP2_LIST
+		    _ -> throw({error, {unknown_op, Op}})
+		end,
+	    {{OpName,D,S1,S2},St};
+	{op2u,[Op,D,S1,S2]} ->
+	    OpName = 
+		case Op of
+		    ?OP2_LIST
+		    _ -> throw({error, {unknown_op, Op}})
+		end,
+	    {{OpName,D,S1,S2},St};
+	{op2r,[Op,D,S1,S2]} ->
+	    OpName = 
+		case Op of
+		    ?OP2R_LIST
+		    _ -> throw({error, {unknown_op, Op}})
+		end,
+	    {{OpName,D,S1,S2},St};
+	{shift_into, [Op, D, S1, S2, S3]} ->
+	    OpName = 
+		case Op of
+		    ?OP_SHIFT_INTO_LIST
+		    _ -> throw({error, {unknown_op, Op}})
+		end,
+	    {{OpName,D,S1,S2,S3},St};
+	{op_src, [Op,Src]} ->
+	    OpName = 
+		case Op of
+		    ?OP_SRC_LIST
+		    _ -> throw({error, {unknown_op, Op}})
+		end,
+	    {{OpName,Src},St};
+	{op_dst, [Op,D]} ->
+	    OpName = 
+		case Op of
+		    ?OP_DST_LIST
+		    _ -> throw({error, {unknown_op, Op}})
+		end,
+	    {{OpName,D},St};
+	{fop1, [Op,D,S]} ->
+	    OpName = case Op of
+			 ?FOP1_LIST
+			 _ -> throw({error, {unknown_fop, Op}})
+		     end,
+	    {{OpName,D,S},St};
+	{fop2, [Op, D, S1, S2]} ->
+	    OpName = case Op of
+			 ?FOP2_LIST
+			 _ -> throw({error, {unknown_fop, Op}})
+		     end,
+	    {{OpName,D,S1,S2},St};
+	{fop2r, [Op, D, S1, S2]} ->
+	    OpName =
+		case Op of
+		    ?FOP2_LIST
+		    _ -> throw({error, {unknown_fop, Op}})
+		end,
+	    {{OpName, D, S1, S2}, St};
+	{fset32, [FReg, Value]} ->
+	    {{fset32, FReg, Value}, St};
+	{fset64, [FReg, Value]} ->
+	    {{fset64, FReg, Value}, St};
+	{fcopy, [Op,FReg,Reg]} ->
+	    {{Op,FReg,Reg},St};
+	{label, []} -> 
 	    {{label, maps:get(label_name, St)}, St};
-	{?FMT_CMP, [Type, Src1, Src1w, Src2, Src2w]} ->
+	{cmp, [Type, S1, S2]} ->
 	    L = maps:get(label_name, St),
 	    T = dec_cmp(Type),
 	    {Opts0,St1} = dec_jump_src(Type, St),
-	    {{jump,[{T, dsrc(Src1,Src1w),dsrc(Src2,Src2w)}|Opts0],L}, St1};
-	{?FMT_JUMP, [Type]} ->
+	    {{jump,[{T, S1,S2}|Opts0],L}, St1};
+	{jump, [Type]} ->
 	    L = maps:get(label_name, St),
 	    T = dec_status(Type),
 	    {Opts0,St1} = dec_jump_src(Type, St),
 	    {{jump, [T|Opts0], L}, St1};
-	{?FMT_FCMP, [Type, Src1, Src1w, Src2, Src2w]} ->
+	{fcmp, [Type, S1, S2]} ->
 	    L = maps:get(label_name, St),
-	    {{Type, dfsrc(Src1,Src1w), dfsrc(Src2,Src2w), L}, St};
+	    {{Type,S1,S2, L}, St};
 	
-	{?FMT_IJUMP,[Type, Src, Srcw]} ->
-	    {{ijump, decode_ijump_type(Type), dsrc(Src,Srcw)}, St};
-	{?FMT_MJUMP,[Type, Mod, Fun]} ->
-	    {{mjump, Type, {list_to_atom(Mod), list_to_atom(Fun)}}, St};
-	{?FMT_CALL, [Type, ArgTypes]} ->
+	{ijump,[Type, S]} ->
+	    {{ijump, decode_ijump_type(Type), S}, St};
+	{mjump,[Type, Mod, Fun]} ->
+	    {{mjump, Type, {Mod, Fun}}, St};
+	{call, [Type, ArgTypes]} ->
 	    L = maps:get(label_name, St),
 	    CallType = decode_call_type(Type),
 	    Ret = decode_ret(ArgTypes),
 	    As  = decode_args(ArgTypes),
 	    {{call, CallType, Ret, As, L}, St};
-	{?FMT_ICALL, [Type,ArgTypes,Src,Srcw]} ->
+	{icall, [Type,ArgTypes,Src]} ->
 	    CallIType = decode_icall_type(Type),
 	    Ret = decode_ret(ArgTypes),
 	    As  = decode_args(ArgTypes),
-	    {{icall, CallIType, Ret, As, dsrc(Src,Srcw)}, St};
+	    {{icall, CallIType, Ret, As, Src}, St};
 	%% like ICALL but with mod:fun instead
-	{?FMT_MCALL, [Type,ArgTypes,Mod,Fun]} ->
+	{mcall, [Type,ArgTypes,Mod,Fun]} ->
 	    ICallType = decode_icall_type(Type),
 	    Ret = decode_ret(ArgTypes),
 	    As  = decode_args(ArgTypes),
-	    MF = {list_to_atom(Mod), list_to_atom(Fun)},
+	    MF = {Mod, Fun},
 	    {{call, ICallType, Ret, As, MF},St};
-	{?FMT_ENTER,[Options,ArgTypes,Scratches,Saved,LocalSize]} ->
+	{enter,[Options,ArgTypes,Scratches,Saved,LocalSize]} ->
 	    Ret = decode_ret(ArgTypes),
 	    As  = decode_args(ArgTypes),
 	    Options1 = decode_enter_options(Options),
 	    Scratches1 = decode_enter_regs(Scratches),
 	    Saved1 = decode_enter_regs(Saved),
 	    {{enter,Options1,Ret,As,Scratches1,Saved1,LocalSize}, St};
-	{?FMT_SET_CONTEXT,[Options,ArgTypes,Scratches,Saved,LocalSize]} ->
+	{set_context,[Options,ArgTypes,Scratches,Saved,LocalSize]} ->
 	    Ret = decode_ret(ArgTypes),
 	    As  = decode_args(ArgTypes),
 	    Options1 = decode_enter_options(Options),
 	    Scratches1 = decode_enter_regs(Scratches),
 	    Saved1 = decode_enter_regs(Saved),
 	    {{set_context,Options1,Ret,As,Scratches1,Saved1,LocalSize}, St};
-	{?FMT_RETURN_VOID,[]} ->
+	{return_void,[]} ->
 	    {{return}, St};
-	{?FMT_RETURN,[Op,Src,Srcw]} ->
-	    {T,S} = case Op of
-			?SLJIT_MOV -> {mov, dsrc(Src,Srcw)};
-			?SLJIT_MOV_P -> {mov_p, dsrc(Src,Srcw)};
-			?SLJIT_MOV_F32 -> {mov_f32, dfsrc(Src,Srcw)};
-			?SLJIT_MOV_F64 -> {mov_f64, dfsrc(Src,Srcw)}
-		    end,
-	    {{return,T,S}, St};
-	{?FMT_SIMD_OP2,[Op, DstVReg, Src1VReg, Src2, Src2w]} ->
-	    {{Op,dvreg(DstVReg),dvreg(Src1VReg), dsrc(Src2, Src2w)},St};
-	{?FMT_CONST, [Op, Dst, Dstw, InitValue]} ->
+	{return,[Op,Src]} ->
+	    OpName = 
+		case Op of
+		    ?SLJIT_MOV -> mov;
+		    ?SLJIT_MOV_P -> mov_p;
+		    ?SLJIT_MOV_F32 -> mov_f32;
+		    ?SLJIT_MOV_F64 -> mov_f64
+		end,
+	    {{return,OpName,Src}, St};
+	{simd_op2,[Op, Dst, Src1, Src2]} ->
+	    OpName = 
+		case Op of
+		    ?SIMD_OP2_LIST
+		    _ -> throw({error, {unknown_simd_op2, Op}})
+		end,
+	    {{OpName,Dst,Src1,Src2},St};
+	{const, [Op, Dst, InitValue]} ->
 	    Name = maps:get(const_name, St),
 	    St1 = maps:remove(const_name, St),
-	    {{const, Name, Op, {Dst, Dstw}, InitValue}, St1};
-	{?FMT_OP_ADDR, [Op,Dst,Dstw]} ->
+	    {{const, Name, Op, Dst, InitValue}, St1};
+	{op_addr, [Op,Dst]} ->
 	    L0 = maps:get(label_name, St, undefined),
 	    Jsrc = maps:get(jump_name, St, undefined),
 	    St1 = maps:remove(jump_name, St),
-	    Op1 = case Op of
-		      ?SLJIT_MOV_ADDR -> mov_addr;
-		      ?SLJIT_MOV_ABS_ADDR -> mov_abs_addr;
-		      ?SLJIT_ADD_ABS_ADDR -> add_abs_addr
-		  end,
-	    {{op_addr, Jsrc, Op1, ddst(Dst,Dstw), L0}, St1};
+	    case Op of
+		mov_addr -> mov_addr;
+		mov_abs_addr -> mov_abs_addr;
+		add_abs_addr -> add_abs_addr
+	    end,
+	    {{op_addr, Jsrc, Op, Dst, L0}, St1};
 	{Fmt,_Args} ->
 	    throw({error, {unknown_format, Fmt}})
     end.	
@@ -514,14 +500,9 @@ load_slo(Arch,File) ->
 load_object(_, <<>>, Acc) ->
     {ok, lists:reverse(Acc)};
 load_object(Compile, <<Sz, Data:Sz/binary, Rest/binary>>, Acc) ->
-    <<F, Args/binary>> = Data,
-    Ins = load_ins(F, Args),
+    {Ins,Sz} = binary_to_term(Data, [used]),
     load_object(Compile, Rest, [Ins|Acc]).
 
-load_ins(F, Bin) ->
-    Sig = fmt_signature(F),
-    As = decode_fmt_args(Sig, Bin),
-    {F, As}.
 
 slo_ins_list(Compile, [Ins|InsList], Sym) ->
     Sym1 = slo_ins(Compile, Ins, Sym),
@@ -532,123 +513,120 @@ slo_ins_list(_, [], Sym) ->
 slo_ins(Compile, Ins, St) ->
     ?dbg("SLO ~w\n", [Ins]),
     case Ins of
-	{?FMT_MODULE, [M]} ->  %% synthetic
-	    Mod = list_to_atom(M),
+	{module, [Mod]} ->  %% synthetic
 	    ok = sljit:module(Compile, Mod),
 	    St#{module => Mod};
-	{?FMT_FUNCTION, [F]} ->  %% synthetic
-	    Fun = list_to_atom(F),
-	    ok = sljit:function(Compile, Fun),
-	    St#{function => Fun};
-	{?FMT_LABEL_NAME, [L]} ->  %% synthetic
+	{function, [Fun]} ->  %% synthetic
+	    Label = sljit:function(Compile, Fun),
+	    St1 = ins_func(Compile, Fun, Label, St),
+	    St1#{function => Fun};
+	{label_name, [L]} ->  %% synthetic
 	    St#{label_name => L};
-	{?FMT_JUMP_NAME, [L]} ->  %% synthetic
+	{jump_name, [L]} ->  %% synthetic
 	    St#{jump_name => L};
-	{?FMT_OP0,[Op]} -> 
+	{op0,[Op]} -> 
 	    ok = sljit:emit_op0(Compile, Op),
 	    St;
-	{?FMT_OP1, [Op, Dst, Dstw, Src, Srcw]} ->
-	    ok = sljit:emit_op1(Compile, Op, Dst, Dstw, Src, Srcw),
+	{op1, [Op, Dst, Src]} ->
+	    ok = sljit:emit_op1(Compile, Op, Dst, Src),
 	    St;
-	{?FMT_OP2, [Op, Dst, Dstw, Src1, Src1w, Src2, Src2w]} ->
-	    ok =sljit:emit_op2(Compile, Op, Dst, Dstw, Src1, Src1w, 
-			       Src2, Src2w),
+	{op2, [Op, Dst, Src1, Src2]} ->
+	    %% FIXME: add flags
+	    ok =sljit:emit_op2(Compile, Op, Dst, Src1, Src2),
 	    St;
-	{?FMT_OP2U, [Op, Src1, Src1w, Src2, Src2w]} ->
-	    ok = sljit:emit_op2u(Compile, Op, Src1,Src1w, Src2,Src2w),
+	{op2u, [Op, Src1, Src2]} ->
+	    ok = sljit:emit_op2u(Compile, Op, Src1, Src2),
 	    St;
-	{?FMT_OP2R, [Op, DR, Src1, Src1w, Src2, Src2w]} ->
-	    ok = sljit:emit_op2r(Compile, Op, DR, Src1,Src1w, Src2,Src2w),
+	{op2r, [Op, DR, Src1, Src2]} ->
+	    ok = sljit:emit_op2r(Compile, Op, DR, Src1, Src2),
 	    St;
-	{?FMT_SI, [Op, Dst, Src1, Src2, Src3, Src3w]} ->
-	    ok = sljit:emit_shift_into(Compile, Op, Dst, Src1,Src2, Src3,Src3w),
+	{shift_into, [Op, Dst, Src1, Src2, Src3]} ->
+	    ok = sljit:emit_shift_into(Compile, Op, Dst, Src1,Src2, Src3),
 	    St;       
-	{?FMT_OP_SRC, [Op, Src, Srcw]} ->
-	    ok = sljit:emit_op_src(Compile, Op, Src, Srcw),
+	{op_src, [Op, Src]} ->
+	    ok = sljit:emit_op_src(Compile, Op, Src),
 	    St;
-	{?FMT_OP_DST, [Op, Dst, Dstw]} ->
-	    ok = sljit:emit_op_dst(Compile, Op, Dst, Dstw),
+	{op_dst, [Op, Dst]} ->
+	    ok = sljit:emit_op_dst(Compile, Op, Dst),
 	    St;	    
-	{?FMT_FOP1, [Op, Dst, Dstw, Src, Srcw]} ->
-	    ok = sljit:emit_fop1(Compile, Op, Dst, Dstw, Src, Srcw),
+	{fop1, [Op, Dst, Src]} ->
+	    ok = sljit:emit_fop1(Compile, Op, Dst, Src),
 	    St;
-	{?FMT_FOP2, [Op, Dst, Dstw, Src1, Src1w, Src2, Src2w]} ->
-	    ok = sljit:emit_fop2(Compile, Op, Dst,Dstw, Src1,Src1w, Src2,Src2w),
+	{fop2, [Op, Dst, Src1, Src2]} ->
+	    ok = sljit:emit_fop2(Compile, Op, Dst, Src1,Src2),
 	    St;
-	{?FMT_FOP2R, [Op, DR, Src1, Src1w, Src2, Src2w]} ->
-	    ok = sljit:emit_fop2r(Compile, Op, DR, Src1, Src1w, Src2, Src2w),
+	{fop2r, [Op, DR, Src1, Src2]} ->
+	    ok = sljit:emit_fop2r(Compile, Op, DR, Src1, Src2),
 	    St;
-	{?FMT_FSET32, [FReg, Value]} ->
+	{fset32, [FReg, Value]} ->
 	    ok = sljit:emit_fset32(Compile, FReg, Value),
 	    St;
-	{?FMT_FSET64, [FReg, Value]} ->
+	{fset64, [FReg, Value]} ->
 	    ok = sljit:emit_fset64(Compile, FReg, Value),
 	    St;
-	{?FMT_FCOPY, [Op,FReg,Reg]} ->
+	{fcopy, [Op,FReg,Reg]} ->
 	    ok = sljit:emit_fopy(Compile, Op, FReg, Reg),
 	    St;
-	{?FMT_LABEL, []} -> 
+	{label, []} -> 
 	    L = maps:get(label_name, St),
 	    ins_label(Compile, {label, L}, St);
-	{?FMT_CMP, [Type, Src1, Src1w, Src2, Src2w]} ->
+	{cmp, [Type, Src1, Src2]} ->
 	    L = maps:get(label_name, St),
-	    Jump = sljit:emit_cmp(Compile, Type, Src1, Src1w, Src2, Src2w),
+	    Jump = sljit:emit_cmp(Compile, Type, Src1, Src2),
 	    add_target(L, Jump, St);
-	{?FMT_FCMP, [Type, Src1, Src1w, Src2, Src2w]} ->
+	{fcmp, [Type, Src1, Src2]} ->
 	    L = maps:get(label_name, St),
-	    Jump = sljit:emit_fcmp(Compile, Type, Src1, Src1w, Src2, Src2w),
+	    Jump = sljit:emit_fcmp(Compile, Type, Src1, Src2),
 	    add_target(L, Jump, St);
-	{?FMT_JUMP, [Type]} ->
+	{jump, [Type]} ->
 	    L = maps:get(label_name, St),
 	    Jump = sljit:emit_jump(Compile, Type),
 	    add_target(L, Jump, St);
-	{?FMT_IJUMP,[Type, Src, Srcw]} ->
-	    ok = sljit:emit_ijump(Compile, Type, Src, Srcw),
+	{ijump,[Type, Src]} ->
+	    ok = sljit:emit_ijump(Compile, Type, Src),
 	    St;
-	{?FMT_MJUMP,[Type, Mod, Fun]} -> 
-	    ok = sljit:emit_mjump(Compile, Type,
-				  list_to_atom(Mod), list_to_atom(Fun)),
+	{mjump,[Type, Mod, Fun]} -> 
+	    ok = sljit:emit_mjump(Compile, Type, Mod, Fun),
 	    St;
-	{?FMT_CALL, [Type, ArgTypes]} ->
+	{call, [Type, ArgTypes]} ->
 	    L = maps:get(label_name, St),
 	    Jump = sljit:emit_call(Compile, Type, ArgTypes),
 	    add_target(L, Jump, St);
-	{?FMT_ICALL, [Type,ArgTypes,Src,Srcw]} ->
-	    ok = sljit:emit_icall(Compile, Type, ArgTypes, Src, Srcw),
+	{icall, [Type,ArgTypes,Src]} ->
+	    ok = sljit:emit_icall(Compile, Type, ArgTypes, Src),
 	    St;
 	%% like ICALL but with mod:fun instead
-	{?FMT_MCALL, [Type,ArgTypes,Mod,Fun]} ->
-	    ok = sljit:emit_mcall(Compile, Type, ArgTypes, 
-				  list_to_atom(Mod), list_to_atom(Fun)),
+	{mcall, [Type,ArgTypes,Mod,Fun]} ->
+	    ok = sljit:emit_mcall(Compile, Type, ArgTypes, Mod, Fun),
 	    St;
-	{?FMT_ENTER,[Options,ArgTypes,Scratches,Saved,LocalSize]} ->
+	{enter,[Options,ArgTypes,Scratches,Saved,LocalSize]} ->
 	    ok = sljit:emit_enter(Compile,Options,ArgTypes,Scratches,Saved,
 				  LocalSize),
 	    St;
-	{?FMT_SET_CONTEXT,[Options,ArgTypes,Scratches,Saved,LocalSize]} ->
+	{set_context,[Options,ArgTypes,Scratches,Saved,LocalSize]} ->
 	    ok = sljit:set_context(Compile,Options,ArgTypes,Scratches,Saved,
 				   LocalSize),
 	    St;
-	{?FMT_RETURN_VOID,[]} ->
+	{return_void,[]} ->
 	    ok = sljit:emit_return_void(Compile),
 	    St;
-	{?FMT_RETURN,[Op,Src,Srcw]} ->
-	    ok = sljit:emit_return(Compile, Op, Src, Srcw),
+	{return,[Op,Src]} ->
+	    ok = sljit:emit_return(Compile, Op, Src),
 	    St;
-	{?FMT_SIMD_OP2,[Op,DstVReg,Src1VReg,Src2,Src2w]} ->
-	    ok = sljit:emit_simd_op2(Compile,Op,DstVReg,Src1VReg,Src2,Src2w),
+	{simd_op2,[Op,Dst,Src1,Src2]} ->
+	    ok = sljit:emit_simd_op2(Compile,Op,Dst,Src1,Src2),
 	    St;
-	{?FMT_CONST_NAME, [Name]} ->  %% synthetic
+	{const_name, [Name]} ->  %% synthetic
 	    St#{const_name => Name};
-	{?FMT_CONST, [Op,Dst,Dstw,InitValue]} -> 
+	{const, [Op,Dst,InitValue]} -> 
 	    Name = maps:get(const_name, St),
-	    Const = sljit:emit_const(Compile, Op, Dst, Dstw, InitValue),
+	    Const = sljit:emit_const(Compile, Op, Dst, InitValue),
 	    ok = sljit:constant(Compile, Name, Const),
 	    CList = maps:get(constants, St, []),
 	    St#{ constants => [{Name, Const} | CList], 
 		 const_name => undefined };
-	{?FMT_OP_ADDR, [Op,Dst,Dstw]} ->
-	    Jump = sljit:emit_op_addr(Compile, Op, Dst, Dstw),
+	{op_addr, [Op, Dst]} ->
+	    Jump = sljit:emit_op_addr(Compile, Op, Dst),
 	    St1 = case maps:get(label_name, St, undefined) of
 		      undefined -> St;
 		      L0 ->
@@ -675,41 +653,42 @@ asm_ins(Compile, Instruction, St) ->
     Fmt = fmt(Instruction),
     ?dbg("ASM (fmt=~w) ~p, st=~p~n", [Fmt, Instruction,St]),
     case Fmt of
-	?FMT_MODULE ->
+	module ->
 	    {module, M} = Instruction,
 	    ok = emit(Compile, module, [M]),
 	    St#{module => M};
-	?FMT_FUNCTION ->
+	function ->
 	    {function, F} = Instruction,
-	    ok = emit(Compile, function, [F]),
-	    St#{function => F};
-	?FMT_OP0 -> ins_op0(Compile, Instruction, St);
-	?FMT_OP1 -> ins_op1(Compile, Instruction, St);
-	?FMT_OP2 -> ins_op2(Compile, Instruction, St);
-	%% ?FMT_OP2U -> ins_op2u(Compile, Instruction, St);
-	?FMT_OP2R -> ins_op2(Compile, Instruction, St);
-	%% ?FMT_SI -> ins_si(Compile, Instruction, St);
-	?FMT_OP_SRC -> ins_op_src(Compile, Instruction, St);
-	?FMT_OP_DST -> ins_op_dst(Compile, Instruction, St);
-	?FMT_FOP1 -> ins_fop1(Compile, Instruction, St);
-	?FMT_FOP2 -> ins_fop2(Compile, Instruction, St);
-	%%?FMT_FOP2R -> ins_fop2r(Compile, Instruction, St);
-	?FMT_FSET32 -> ins_fset32(Compile, Instruction, St);
-	?FMT_FSET64 -> ins_fset64(Compile, Instruction, St);
-	%%?FMT_FCOPY -> ins_fcopy(Compile, Instruction, St);
-	?FMT_LABEL -> ins_label(Compile, Instruction, St);
-	?FMT_JUMP -> ins_jump(Compile, Instruction, St);
-	?FMT_CALL -> ins_call(Compile, Instruction, St);
-	%% ?FMT_CMP -> ins_cmp(Compile, Instruction, St);
-	%% ?FMT_FCMP -> ins_fcmp(Compile, Instruction, St);
-	?FMT_IJUMP -> ins_ijump(Compile, Instruction, St);
-	?FMT_ICALL -> ins_icall(Compile, Instruction, St);
-	?FMT_ENTER -> ins_enter(Compile, Instruction, St);
-	?FMT_SET_CONTEXT -> ins_enter(Compile, Instruction, St);
-	?FMT_RETURN -> ins_return(Compile, Instruction, St);
-	?FMT_SIMD_OP2 -> ins_simd_op2(Compile, Instruction, St);
-	?FMT_CONST -> ins_const(Compile, Instruction, St);
-	?FMT_OP_ADDR -> ins_op_addr(Compile,  Instruction, St);
+	    Label = emit(Compile, function, [F]),
+	    St1 = ins_func(Compile, F, Label, St),
+	    St1#{function => F};
+	op0 -> ins_op0(Compile, Instruction, St);
+	op1 -> ins_op1(Compile, Instruction, St);
+	op2 -> ins_op2(Compile, Instruction, St);
+	%% op2u -> ins_op2u(Compile, Instruction, St);
+	op2r -> ins_op2(Compile, Instruction, St);
+	%% shift_into -> ins_shift_info(Compile, Instruction, St);
+	op_src -> ins_op_src(Compile, Instruction, St);
+	op_dst -> ins_op_dst(Compile, Instruction, St);
+	fop1 -> ins_fop1(Compile, Instruction, St);
+	fop2 -> ins_fop2(Compile, Instruction, St);
+	%%fop2r -> ins_fop2r(Compile, Instruction, St);
+	fset32 -> ins_fset32(Compile, Instruction, St);
+	fset64 -> ins_fset64(Compile, Instruction, St);
+	%%fcopy -> ins_fcopy(Compile, Instruction, St);
+	label -> ins_label(Compile, Instruction, St);
+	jump -> ins_jump(Compile, Instruction, St);
+	call -> ins_call(Compile, Instruction, St);
+	%% cmp -> ins_cmp(Compile, Instruction, St);
+	%% fcmp -> ins_fcmp(Compile, Instruction, St);
+	ijump -> ins_ijump(Compile, Instruction, St);
+	icall -> ins_icall(Compile, Instruction, St);
+	enter -> ins_enter(Compile, Instruction, St);
+	set_context -> ins_enter(Compile, Instruction, St);
+	return -> ins_return(Compile, Instruction, St);
+	simd_op2 -> ins_simd_op2(Compile, Instruction, St);
+	const -> ins_const(Compile, Instruction, St);
+	op_addr -> ins_op_addr(Compile,  Instruction, St);
 	Fmt -> throw({error, {unknown_format, Fmt}})
     end.
 
@@ -734,8 +713,8 @@ ins_op_src(Compile, {Ins, S}, St) ->
 	     ?OP_SRC_LIST
 	     _ -> throw({error, {unknown_op_src, Ins}})
 	 end,
-    {Src, Srcw} = src(S),
-    ok = emit(Compile, op_src, [Op, Src, Srcw]),
+    Src = src(S),
+    ok = emit(Compile, op_src, [Op, Src]),
     St.
 
 -undef(OP_DST_NAME).
@@ -746,8 +725,8 @@ ins_op_dst(Compile, {Ins, D}, St) ->
 	     ?OP_DST_LIST
 	     _ -> throw({error, {unknown_op_dst, Ins}})
 	 end,
-    {Dst, Dstw} = dst(D),
-    ok = emit(Compile, op_dst, [Op, Dst, Dstw]),
+    Dst = dst(D),
+    ok = emit(Compile, op_dst, [Op, Dst]),
     St.
 
 
@@ -759,12 +738,10 @@ ins_op1(Compile, {Ins, D, S}, St) ->
 	     ?OP1_LIST
 	     _ -> throw({error, {unknown_op1, Ins}})
 	 end,
-    {Dst, Dstw} = dst(D),
-    {Src, Srcw} = src(S),
-    ok = emit(Compile, op1, [Op, Dst, Dstw, Src, Srcw]),
+    Dst = dst(D),
+    Src = src(S),
+    ok = emit(Compile, op1, [Op, Dst, Src]),
     St.
-
-
 
 -undef(OP2_NAME).
 -define(OP2_NAME(I, N), I -> N; ).
@@ -772,21 +749,24 @@ ins_op1(Compile, {Ins, D, S}, St) ->
 -undef(OP2R_NAME).
 -define(OP2R_NAME(I, N), I -> N; ).
 
--undef(OP_SI_NAME).
--define(OP_SI_NAME(I, N), I -> (N); ).
+-undef(OP_SHIFT_INTO_NAME).
+-define(OP_SHIFT_INTO_NAME(I, N), I -> (N); ).
 
 ins_op2(Compile, {Ins, S1, S2}, St) ->
     ins_op2(Compile, {Ins, [], S1, S2}, St);
+
 ins_op2(Compile, {Ins, Fs, S1, S2}, St) when is_list(Fs) ->
     Op = case Ins of
 	     ?OP2_LIST
 	     _ -> throw({error, {unknown_op2, Ins}})
 	 end,
     OpF = ins_set_flags(Fs),
-    {Src1, Src1w} = src(S1),
-    {Src2, Src2w} = src(S2),
-    ok = emit(Compile, op2u, [Op bor OpF, Src1, Src1w, Src2, Src2w]),
+    Src1 = src(S1),
+    Src2 = src(S2),
+    ok = emit(Compile, op2u, [Op bor OpF, Src1, Src2]),
     St;
+ins_op2(Compile, {Ins, D, S1, S2}, St) ->
+    ins_op2(Compile, {Ins, [], D, S1, S2}, St);
 ins_op2(Compile, {Ins, Fs, D, S1, S2}, St) when is_list(Fs) ->
     Op = case Ins of
 	     ?OP2_LIST
@@ -794,30 +774,26 @@ ins_op2(Compile, {Ins, Fs, D, S1, S2}, St) when is_list(Fs) ->
 	     _ -> throw({error, {unknown_op2, Ins}})
 	 end,
     OpF = ins_set_flags(Fs),
-    {Src1, Src1w} = src(S1),
-    {Src2, Src2w} = src(S2),
-    {Dst, Dstw} = dst(D),
-
-    IsOP2R = case Ins of 
-		 ?OP2R_LIST
-		 _ -> false
-	     end,
-    if is_integer(IsOP2R), ?SLJIT_IS_REG(Dst), Dstw =:= 0 ->
-
-	    ok = emit(Compile, op2r,
-		      [Op bor OpF, Dst, Src1, Src1w, Src2, Src2w]);
-       true ->
+    Src1 = src(S1),
+    Src2 = src(S2),
+    Dst = dst(D),
+    OPR = case Ins of 
+	      ?OP2R_LIST
+	      _ -> false
+	  end,
+    if OPR =:= false ->
 	    ok = emit(Compile, op2,
-		      [Op bor OpF, Dst, Dstw, Src1, Src1w, Src2, Src2w])
+		      [Op bor OpF, Dst, Src1, Src2]);
+       true ->
+	    ok = emit(Compile, op2r,
+		      [Op bor OpF, Dst, Src1, Src2])
     end,
     St;
-ins_op2(Compile, {Ins, D, S1, S2}, St) ->
-    ins_op2(Compile, {Ins, [], D, S1, S2}, St);
 ins_op2(Compile, {Ins, D, S1, S2, S3}, St) ->
     ins_op2(Compile, {Ins, [], D, S1, S2, S3}, St);
 ins_op2(Compile, {Ins, Fs, D, S1, S2, S3}, St) ->
     Op = case Ins of
-	     ?OP_SI_LIST
+	     ?OP_SHIFT_INTO_LIST
 	     _ -> throw({error, {unknown_shift_into_op, Ins}})
 	 end,
     Op1 = case Fs of
@@ -827,8 +803,8 @@ ins_op2(Compile, {Ins, Fs, D, S1, S2, S3}, St) ->
     Dst = reg(D),
     Src1 = reg(S1),
     Src2 = reg(S2),
-    {Src3,Src3w} = src(S3),
-    ok = emit(Compile, shift_into, [Op1, Dst, Src1, Src2, Src3, Src3w]),
+    Src3 = src(S3),
+    ok = emit(Compile, shift_into, [Op1, Dst, Src1, Src2, Src3]),
     St.
 
 -undef(FOP1_NAME).
@@ -839,10 +815,10 @@ ins_fop1(Compile, {Ins, D, S}, St) ->
 	     ?FOP1_LIST
 	     _ -> throw({error, {unknown_fop1, Ins}})
 	 end,
-    {Dst, Dstw} = fdst(D),
-    {Src, Srcw} = fsrc(S),
+    Dst = fdst(D),
+    Src = fsrc(S),
     %% fixme: emit imm float ?
-    ok = emit(Compile, fop1, [Op, Dst, Dstw, Src, Srcw]),
+    ok = emit(Compile, fop1, [Op, Dst, Src]),
     St.
 
 -undef(FOP2_NAME).
@@ -860,18 +836,19 @@ ins_fop2(Compile, {Ins, Fs, D, S1, S2}, St) ->
 	      [copysign_f32] -> Op bor ?SLJIT_COPYSIGN_F32;
 	      [] -> Op
 	  end,
-    %% fixme: emit imm float 
-    {Src1, Src1w} = fsrc(S1),
-    {Src2, Src2w} = fsrc(S2),
-    {Dst, Dstw} = fdst(D),
-
-    if ?SLJIT_IS_REG(Dst), Dstw =:= 0 ->
+    Src1 = fsrc(S1),
+    Src2 = fsrc(S2),
+    Dst = fdst(D),
+    case Dst of
+	{Dr={fr,_}, 0} ->
 	    ok = emit(Compile, fop2r, 
-		      [Op1, Dst, Src1, Src1w, Src2, Src2w]),
-	    St;
-       true ->
-	    ok = emit(Compile, fop2, 
-		      [Op1,Dst, Dstw, Src1, Src1w, Src2, Src2w]),
+		      [Op1, Dr, Src1, Src2]);
+	{Dr={fs,_}, 0} ->
+	    ok = emit(Compile, fop2r, 
+		      [Op1, Dr, Src1, Src2]);
+	_ ->
+	    emit(Compile, fop2, 
+		 [Op1, Dst, Src1, Src2]),
 	    St
     end.
 
@@ -895,9 +872,9 @@ ins_set_flags([F|Fs]) ->
 -spec cmp(sljit:compiler(), {cmp, Test::atom(), S1::imm()|reg(), S2::imm()|reg()}, St::map()) -> sljit:jump().
 cmp(Compile, {cmp, Test, S1, S2}, _St) ->
     Type = enc_cmp(Test),
-    {Src1, Src1w} = src(S1),
-    {Src2, Src2w} = src(S2),
-    emit(Compile, cmp, [Type, Src1, Src1w, Src2, Src2w]).
+    Src1 = src(S1),
+    Src2 = src(S2),
+    emit(Compile, cmp, [Type, Src1, Src2]).
 
 enc_cmp(Test) ->
     case Test of
@@ -1021,6 +998,25 @@ ins_label(Compile, {label, L}, St) ->
 	    end
     end.
 
+ins_func(Compile, F, Label, St) ->
+    case maps:find({label, F}, St) of
+	{ok, _Label} ->
+	    throw({error, {duplicate_label, F}});
+	error ->
+	    case maps:find({target, F}, St) of
+		{ok, Jumps} ->
+		    noemit(Compile, label_addr, [F, Label]),
+		    lists:foreach(fun(Jump) -> 
+					  %% code generation?
+					  sljit:set_label(Jump, Label)
+				  end, Jumps),
+		    St#{ {label, F} => Label, {target, F} => [] };
+		error ->
+		    noemit(Compile, label_addr, [F, Label]),
+		    St#{ {label, F} => Label }
+	    end
+    end.
+
 ins_jump(Compile, {jump, {Mod,Fun}}, St) when is_atom(Mod), is_atom(Fun) ->
     %% fixme conditional/rewriteable mod:fun entries?
     ok = emit(Compile, mjump, [?SLJIT_JUMP, Mod, Fun]),
@@ -1037,9 +1033,9 @@ make_jump(Compile,Options,LabelName,St) ->
     add_target(LabelName, Jump, St).
 
 %% process jump options
-make_jump_(Compile, [], JSrc, {T,{Src1,Src1w},{Src2,Src2w}}) ->
+make_jump_(Compile, [], JSrc, {T, Src1, Src2}) ->
     set_jump_name(Compile, JSrc),
-    Jump = emit(Compile, cmp, [dynamic_jump(JSrc, T),Src1,Src1w,Src2,Src2w]),
+    Jump = emit(Compile, cmp, [dynamic_jump(JSrc, T),Src1,Src2]),
     set_jump_src(Compile,JSrc,Jump);
 make_jump_(Compile, [], JSrc, T) when is_integer(T) ->
     set_jump_name(Compile, JSrc),
@@ -1062,17 +1058,17 @@ ins_ijump(Compile, {ijump, Options}, St) ->
     make_ijump_(Compile, Options, ?SLJIT_JUMP, undefined, undefined, 
 		undefined, undefined, St).
 
-make_ijump_(Compile, [], Type, _Src, {Dst,Dstw}, Def, JSrc, St) ->
+make_ijump_(Compile, [], Type, _Src, Dst, Def, JSrc, St) ->
     if JSrc =:= undefined -> ok;
        true ->
 	    ok = emit(Compile, const_name, [JSrc])
     end,
-    Const = emit(Compile, const, [?SLJIT_MOV, Dst, Dstw, Def]),
+    Const = emit(Compile, const, [?SLJIT_MOV, Dst, Def]),
     noemit(Compile, constant, [JSrc, Const]), %% jsrc=undefined => anonymous
-    ok = emit(Compile, ijump, [Type, Dst, Dstw]),
+    ok = emit(Compile, ijump, [Type, Dst]),
     St;
-make_ijump_(Compile, [], Type, {Src,Srcw}, _Dst, _Def, _JSrc, St) ->
-    ok = emit(Compile, ijump, [Type, Src, Srcw]),
+make_ijump_(Compile, [], Type, {Src}, _Dst, _Def, _JSrc, St) ->
+    ok = emit(Compile, ijump, [Type, Src]),
     St;
 
 make_ijump_(Compile, [Option|Options], T, Src, Dst, Def, JSrc, St) ->
@@ -1121,13 +1117,13 @@ set_jump_src(Compile,JumpSrc, Jump) ->
 ins_op_addr(Compile, {op_addr, JSrc, OpName, D, L}, St) ->
     ok = emit(Compile, label_name, [L]),
     set_jump_name(Compile, JSrc),
-    {Dst, Dstw} = dst(D),
+    Dst = dst(D),
     Op = case OpName of
 	     mov_addr -> ?SLJIT_MOV_ADDR;
 	     mov_abs_addr -> ?SLJIT_MOV_ABS_ADDR;
 	     add_abs_addr -> ?SLJIT_ADD_ABS_ADDR
 	 end,
-    Jump = emit(Compile, op_addr, [Op, Dst, Dstw]),
+    Jump = emit(Compile, op_addr, [Op, Dst]),
     set_jump_src(Compile,JSrc,Jump),
     add_target(L, Jump, St).
 
@@ -1140,9 +1136,9 @@ ins_const(Compile, {const, Name, Type, D, InitValue}, St) ->
 	     mov32_u8 -> ?SLJIT_MOV32_U8;
 	     _ when is_integer(Type) -> Type
 	 end,
-    {Dst, Dstw} = dst(D),
+    Dst = dst(D),
     ok = emit(Compile, const_name, [Name]),
-    Const = emit(Compile, const, [Op, Dst, Dstw, InitValue]),
+    Const = emit(Compile, const, [Op, Dst, InitValue]),
     ok = noemit(Compile, constant, [Name, Const]),
     CList = maps:get(constants, St, []),
     St#{ constants => [{Name, Const} | CList] }.
@@ -1158,15 +1154,16 @@ ins_call(Compile, {call, Type, Ret, Args, L0}, St) ->
     Type1 = encode_call_type(Type),
     RetType = encode_ret(Ret),
     ArgTypes = RetType bor encode_args(Args),
-    Jump = sljit:emit_call(Compile, Type1, ArgTypes),
+    Jump = emit(Compile, call, [Type1, ArgTypes]),
+    %% Jump = sljit:emit_call(Compile, Type1, ArgTypes),
     add_target(L0, Jump, St).
 
 ins_icall(Compile, {icall, Type, Ret, Args, S}, St) ->
-    {Src, Srcw} = src(S),
+    Src = src(S),
     Type1 = encode_icall_type(Type),
     RetType = encode_ret(Ret),
     ArgTypes = RetType bor encode_args(Args),
-    ok = emit(Compile, icall, [Type1, ArgTypes, Src, Srcw]),
+    ok = emit(Compile, icall, [Type1, ArgTypes, Src]),
     St.
 
 ins_enter(Compile, {enter, Options0, RetType0, ArgTypes0, 
@@ -1199,22 +1196,22 @@ ins_return(Compile, return, St) ->
 ins_return(Compile, {return, Op0, S}, St) ->
     case Op0 of
 	mov -> 
-	    {Src, Srcw} = src(S),
-	    ok = emit(Compile, return, [?SLJIT_MOV, Src, Srcw]);
+	    Src = src(S),
+	    ok = emit(Compile, return, [?SLJIT_MOV, Src]);
 	mov_p ->
-	    {Src, Srcw} = src(S),
-	    ok = emit(Compile, return, [?SLJIT_MOV_P, Src, Srcw]);
+	    Src = src(S),
+	    ok = emit(Compile, return, [?SLJIT_MOV_P, Src]);
 	mov_f32 ->
 	    %% fixme: emit imm float
-	    {Src, Srcw} = fsrc(S),
-	    ok = emit(Compile, return, [?SLJIT_MOV_F32, Src, Srcw]);
+	    Src = fsrc(S),
+	    ok = emit(Compile, return, [?SLJIT_MOV_F32, Src]);
 	mov_f64 ->
 	    %% fixme: emit imm float
-	    {Src, Srcw} = fsrc(S),
-	    ok = emit(Compile, return, [?SLJIT_MOV_F64, Src, Srcw]);
+	    Src = fsrc(S),
+	    ok = emit(Compile, return, [?SLJIT_MOV_F64, Src]);
 	_ when is_integer(Op0) ->
-	    {Src, Srcw} = src(S), 
-	    ok = emit(Compile, return, [Op0, Src, Srcw])
+	    Src = src(S), 
+	    ok = emit(Compile, return, [Op0, Src])
     end,
     St.
 
@@ -1229,11 +1226,11 @@ ins_simd_op2(Compile, {Ins, Fs, D, S1, S2}, St) when is_list(Fs) ->
 	     _ -> throw({error, {unknown_simd_op2, Ins}})
 	 end,
     OpF = ins_set_vflags(Fs),
-    DstVReg = vreg(D),
-    Src1VReg = vreg(S1),
-    {Src2, Src2w} = src(S2),
+    Dst = vreg(D),
+    Src1 = vreg(S1),
+    Src2 = vsrc(S2),
     ok = emit(Compile, simd_op2, 
-	      [Op bor OpF, DstVReg, Src1VReg, Src2, Src2w]),
+	      [Op bor OpF, Dst, Src1, Src2]),
     St.
 
 
@@ -1283,14 +1280,11 @@ emit(Compile, Fmt, Args) ->
     apply(sljit, SLFunc, [Compile|Args]).
 
 %% encode and write Fmt Args to file
-emitf(Fd, Fmt, Args) ->
-    F = encode_fmt(Fmt),
-    Sig = fmt_signature(F),
-    Bin1 = encode_fmt_args(Sig, Args),
-    true = (byte_size(Bin1) < 254),
-    Bin = <<(byte_size(Bin1)+1),F,Bin1/binary>>,
-    file:write(Fd, Bin).
-
+emitf(Fd, Fmt, Args) when is_atom(Fmt) ->
+    Bin = term_to_binary({Fmt,Args}),
+    true = (byte_size(Bin) < 256),
+    Bin1 = <<(byte_size(Bin)),Bin/binary>>,
+    file:write(Fd, Bin1).
 
 %% compile and emit binary 
 noemit({fd,_Fd,Compile}, Fmt, Args) ->
@@ -1341,40 +1335,40 @@ emit_func(label_addr) -> label_addr.
 
 
 -undef(OP0_NAME).
--define(OP0_NAME(I, N), I -> ?FMT_OP0; ).
+-define(OP0_NAME(I, N), I -> op0; ).
 
 -undef(OP_SRC_NAME).
--define(OP_SRC_NAME(I, N), I -> ?FMT_OP_SRC; ).
+-define(OP_SRC_NAME(I, N), I -> op_src; ).
 
 -undef(OP_DST_NAME).
--define(OP_DST_NAME(I, N), I -> ?FMT_OP_DST; ).
+-define(OP_DST_NAME(I, N), I -> op_dst; ).
 
 -undef(OP1_NAME).
--define(OP1_NAME(I, N), I -> ?FMT_OP1; ).
+-define(OP1_NAME(I, N), I -> op1; ).
 
 -undef(OP2_NAME).
--define(OP2_NAME(I, N), I -> ?FMT_OP2; ).
+-define(OP2_NAME(I, N), I -> op2; ).
 
 -undef(OP2R_NAME).
--define(OP2R_NAME(I, N), I -> ?FMT_OP2R; ).
+-define(OP2R_NAME(I, N), I -> op2r; ).
 
 -undef(FOP1_NAME).
--define(FOP1_NAME(I, N), I -> ?FMT_FOP1; ).
+-define(FOP1_NAME(I, N), I -> fop1; ).
 
 -undef(FOP2_NAME).
--define(FOP2_NAME(I, N), I -> ?FMT_FOP2; ).
+-define(FOP2_NAME(I, N), I -> fop2; ).
 
 -undef(FOP2R_NAME).
--define(FOP2R_NAME(I, N), I -> ?FMT_FOP2R; ).
+-define(FOP2R_NAME(I, N), I -> fop2r; ).
 
 -undef(OP_FCOPY_NAME).
--define(OP_FCOPY_NAME(I, N), I -> ?FMT_FCOPY; ).
+-define(OP_FCOPY_NAME(I, N), I -> fcopy; ).
 
--undef(OP_SI_NAME).
--define(OP_SI_NAME(I, N), I -> ?FMT_SI; ).
+-undef(OP_SHIFT_INTO_NAME).
+-define(OP_SHIFT_INTO_NAME(I, N), I -> shift_into; ).
 
 -undef(SIMD_OP2_NAME).
--define(SIMD_OP2_NAME(I, N), I -> ?FMT_SIMD_OP2; ).
+-define(SIMD_OP2_NAME(I, N), I -> simd_op2; ).
 
 fmt(Ins) ->
     case opcode(Ins) of
@@ -1387,24 +1381,24 @@ fmt(Ins) ->
 	?FOP1_LIST
 	?FOP2_LIST
 	?OP_FCOPY_LIST
-	%% ?OP_SI_LIST
-	label -> ?FMT_LABEL;
-	jump -> ?FMT_JUMP;
-	enter -> ?FMT_ENTER;
-	set_context -> ?FMT_SET_CONTEXT;
-	return -> ?FMT_RETURN;
-	return_void -> ?FMT_RETURN;
-	label_name -> ?FMT_LABEL_NAME;
-	const_name -> ?FMT_CONST_NAME;
-	jump_name -> ?FMT_JUMP_NAME;
-	module -> ?FMT_MODULE;
-	function -> ?FMT_FUNCTION;
-	fset32 -> ?FMT_FSET32;
-	fset64 -> ?FMT_FSET64;
-	call -> ?FMT_CALL;
-	icall -> ?FMT_ICALL;
-	ijump -> ?FMT_IJUMP;
-	const -> ?FMT_CONST;
+	%% ?OP_SHIFT_INTO_LIST - handled by op2
+	label -> label;
+	jump -> jump;
+	enter -> enter;
+	set_context -> set_context;
+	return -> return;
+	return_void -> return_void;
+	label_name -> label_name;
+	const_name -> const_name;
+	jump_name -> jump_name;
+	module -> module;
+	function -> function;
+	fset32 -> fset32;
+	fset64 -> fset64;
+	call -> call;
+	icall -> icall;
+	ijump -> ijump;
+	const -> const;
 	_ -> throw({error, {unknown_op, Ins}})
     end.
 
@@ -1427,156 +1421,48 @@ decode_fmt(Fmt) ->
 	_ -> throw({error, {unknown_format, Fmt}})
     end.
 
-%% format signature number and types of arguments
-fmt_signature(Fmt) ->
-    case Fmt of 
-	?FMT_OP0 -> "u";
-	?FMT_OP1 -> "uuiui";
-	?FMT_OP2 -> "uuiuiui";
-	?FMT_OP2U -> "uuiui";
-	?FMT_OP2R -> "uuuiui";
-	?FMT_OP_SRC -> "uui";
-	?FMT_OP_DST -> "uui";
-	?FMT_SI -> "uuuuui";
-	?FMT_FOP1 -> "uuiui";
-	?FMT_FOP2 -> "uuiuiui";
-	?FMT_FOP2R -> "uuuiui";
-	?FMT_FSET32 -> "uf";
-	?FMT_FSET64 -> "ud";
-	?FMT_FCOPY -> "uuu";
-	?FMT_LABEL_NAME -> "v";
-	?FMT_JUMP_NAME -> "v";
-	?FMT_CONST_NAME -> "v";
-	?FMT_MODULE -> "s";
-	?FMT_FUNCTION -> "s";
-	?FMT_LABEL -> "";
-	?FMT_CMP -> "uuiui";
-	?FMT_JUMP -> "u";
-	?FMT_ENTER -> "uuuuu";
-	?FMT_SET_CONTEXT -> "uuuuu";
-	?FMT_RETURN_VOID -> "";
-	?FMT_RETURN -> "uui";
-	?FMT_SIMD_OP2 -> "uuuui";
-	?FMT_MCALL -> "uuss";
-	?FMT_MJUMP -> "uss";
-	?FMT_ICALL -> "uuui";
-	?FMT_IJUMP -> "uui";
-	?FMT_CALL -> "uu";
-	?FMT_CONST -> "uuiv";
-	?FMT_OP_ADDR -> "uui"
-    end.
+opcode(T) when is_atom(T) -> T;
+opcode(T) when is_atom(element(1, T)) ->  element(1, T).
 
 
-opcode(T) when is_atom(T) ->
-    T;
-opcode(T) when is_atom(element(1, T)) ->
-    element(1, T).
-
--spec dst(imm()|mem()|reg()) -> {sljit:op_src(), integer()}.
-dst({mem,Imm}) when is_integer(Imm) ->       {?SLJIT_MEM0(), Imm};
-dst({mem,R1}) ->                             {?SLJIT_MEM1(reg(R1)),0};
-dst({mem,R1,Imm}) when is_integer(Imm) ->    {?SLJIT_MEM1(reg(R1)),Imm};
-dst({mem,R1,R2}) ->                          {?SLJIT_MEM2(reg(R1),reg(R2)),0};
-dst({mem,R1,R2,Imm}) when is_integer(Imm) -> {?SLJIT_MEM2(reg(R1),reg(R2)),Imm};
-dst({reg, R}) ->                             {reg(R), 0};
-dst(R) when is_atom(R) ->                    {reg(R), 0}.
-
-ddst(?SLJIT_MEM0(), I) -> {mem, I};
-ddst(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM ->
-    R1 = R band 16#7f,
-    R2 = (R bsr 8) band 16#ff,
-    if R2 =/= 0, I =:= 0 -> {mem,dreg(R1),dreg(R2)};
-       R2 =/= 0 -> {mem,dreg(R1),dreg(R2),I};
-       I =:= 0 -> {mem,dreg(R1)};
-       true -> {mem,dreg(R1),I}
-    end;
-ddst(R, 0) -> dreg(R).
-
--spec src(imm()|mem()|reg()|integer()) -> {sljit:op_src(), integer()}.
-src(Imm) when is_integer(Imm) ->             {?SLJIT_IMM, Imm};
-src({imm,Imm}) when is_integer(Imm) ->       {?SLJIT_IMM, Imm};
-src({mem,Imm}) when is_integer(Imm) ->       {?SLJIT_MEM0() bor ?SLJIT_IMM, Imm};
-src({mem,R1}) ->                             {?SLJIT_MEM1(reg(R1)), 0};
-src({mem,R1,Imm}) when is_integer(Imm) ->    {?SLJIT_MEM1(reg(R1)), Imm};
-src({mem,R1,R2}) ->                          {?SLJIT_MEM2(reg(R1), reg(R2)), 0};
-src({mem,R1,R2,Imm}) when is_integer(Imm) -> {?SLJIT_MEM2(reg(R1),reg(R2)),Imm};
-src({reg, R}) ->                             {reg(R), 0};
-src(R) when is_atom(R) ->                    {reg(R), 0}.
-
-dsrc(?SLJIT_IMM, I) -> I;  %% looks beter than {imm,I}?
-dsrc(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM,
-		(R band ?SLJIT_IMM) =:= ?SLJIT_IMM -> {mem, I};
-dsrc(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM ->
-    R1 = R band 16#7f,
-    R2 = (R bsr 8) band 16#ff,
-    if R2 =/= 0, I =:= 0 -> {mem,dreg(R1),dreg(R2)};
-       R2 =/= 0 -> {mem,dreg(R1),dreg(R2),I};
-       I =:= 0 -> {mem,dreg(R1)};
-       true -> {mem,dreg(R1),I}
-    end;
-dsrc(R, 0) -> dreg(R).
-
--spec fdst(imm()|mem()|freg()) -> {sljit:op_src(), integer()}.
-fdst({mem,Imm}) when is_integer(Imm) ->
-    {?SLJIT_MEM0(), Imm};
-fdst({mem,R1}) -> 
-    {?SLJIT_MEM1(reg(R1)), 0};
-fdst({mem,R1,Imm}) when is_integer(Imm) -> 
-    {?SLJIT_MEM1(reg(R1)), Imm};
-fdst({mem,R1,R2}) -> 
-    {?SLJIT_MEM2(reg(R1), reg(R2)), 0};
-fdst({mem,R1,R2,Imm}) when is_integer(Imm) -> 
-    {?SLJIT_MEM2(reg(R1), reg(R2)), Imm};
-fdst({freg, R}) -> 
-    {freg(R), 0};
-fdst(R) when is_atom(R) ->
-    {freg(R), 0}.
-
--spec fsrc(imm()|mem()|freg()|integer()) -> {sljit:op_src(), integer()}.
-fsrc(Imm) when is_float(Imm) ->
-    {?SLJIT_IMM, Imm};
-fsrc({imm,Imm}) when is_float(Imm) ->
-    {?SLJIT_IMM, Imm};
-fsrc({mem,Imm}) when is_integer(Imm) ->
-    {?SLJIT_MEM0() bor ?SLJIT_IMM, Imm};
-fsrc({mem,R1}) -> 
-    {?SLJIT_MEM1(reg(R1)), 0};
-fsrc({mem,R1,Imm}) when is_integer(Imm) -> 
-    {?SLJIT_MEM1(reg(R1)), Imm};
-fsrc({mem,R1,R2}) -> 
-    {?SLJIT_MEM2(reg(R1), reg(R2)), 0};
-fsrc({mem,R1,R2,Imm}) when is_integer(Imm) -> 
-    {?SLJIT_MEM2(reg(R1), reg(R2)), Imm};
-fsrc({freg, R}) -> 
-    {freg(R), 0};
-fsrc(R) when is_atom(R) ->
-    {freg(R), 0}.
+%% generate destination
+sd({mem,Imm},_) when is_integer(Imm) ->       {mem, Imm};
+sd({mem,R1},_) ->                             {mem,reg(R1)};
+sd({mem,R1,Imm},_) when is_integer(Imm) ->    {mem,reg(R1),Imm};
+sd({mem,R1,R2},_) ->                          {mem,reg(R1),reg(R2)};
+sd({mem,R1,R2,Imm},_) when is_integer(Imm) -> {mem,reg(R1),reg(R2),Imm};
+sd({r,I},r) when is_integer(I), I>=0, I=<127 -> {r,I};
+sd({s,I},r) when is_integer(I), I>=0, I=<127 -> {s,I};
+sd(R, r) when is_atom(R) -> reg(R);
+sd({fr,I},f) when is_integer(I), I>=0, I=<127 -> {fr,I};
+sd({fs,I},f) when is_integer(I), I>=0, I=<127 -> {fs,I};
+sd(R, f) when is_atom(R) -> freg(R);
+sd({vr,I},v) when is_integer(I), I>=0, I=<127 -> {vr,I};
+sd({vs,I},v) when is_integer(I), I>=0, I=<127 -> {vs,I};
+sd(R, v) when is_atom(R) -> vreg(R).
 
 
-dfdst(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM,
-		 (R band ?SLJIT_IMM) =:= ?SLJIT_IMM -> {mem, I};
-dfdst(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM ->
-    R1 = R band 16#7f,
-    R2 = (R bsr 8) band 16#ff,
-    if R2 =/= 0, I =:= 0 -> {mem,dreg(R1),dreg(R2)};
-       R2 =/= 0 -> {mem,dreg(R1),dreg(R2),I};
-       I =:= 0 -> {mem,dreg(R1)};
-       true -> {mem,dreg(R1),I}
-    end;
-dfdst(R, 0) -> dfreg(R).
+-spec dst(dst()) -> dst().
+dst(D) -> sd(D, r).
 
-dfsrc(?SLJIT_IMM, Imm) -> {imm,Imm};
-dfsrc(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM,
-		 (R band ?SLJIT_IMM) =:= ?SLJIT_IMM -> {mem, I};
-dfsrc(R, I) when (R band ?SLJIT_MEM) =:= ?SLJIT_MEM ->
-    R1 = R band 16#7f,
-    R2 = (R bsr 8) band 16#ff,
-    if R2 =/= 0, I =:= 0 -> {mem,dreg(R1),dreg(R2)};
-       R2 =/= 0 -> {mem,dreg(R1),dreg(R2),I};
-       I =:= 0 -> {mem,dreg(R1)};
-       true -> {mem,dreg(R1),I}
-    end;
-dfsrc(R, 0) -> dfreg(R).
+-spec src(src()) -> src().
+src(Imm) when is_integer(Imm) ->       {imm, Imm};
+src({imm,Imm}) when is_integer(Imm) -> {imm, Imm};
+src(S) -> sd(S, r).
+
+-spec fdst(fdst()) -> fdst().
+fdst(D) -> sd(D, f).
+
+-spec fsrc(fsrc()) -> fsrc().
+fsrc(S) -> sd(S, f).
+
+-spec vdst(vdst()) -> vdst().
+vdst(D) -> sd(D, v).
+
+-spec vsrc(vsrc()) -> vsrc().
+vsrc(S) -> sd(S, v).
+
+
 
 encode_enter_options([]) -> 0;
 encode_enter_options([{keep,N}|Opts]) when N >= 1, N =< 3 ->
@@ -1632,9 +1518,13 @@ decode_ret(Type) ->
 	?SLJIT_ARG_TYPE_W -> word;
 	?SLJIT_ARG_TYPE_32 -> word32;
 	?SLJIT_ARG_TYPE_P  -> ptr;
+	?SLJIT_ARG_TYPE_TERM -> term;
+	?SLJIT_ARG_TYPE_W_R -> word;
+	?SLJIT_ARG_TYPE_32_R -> word32;
+	?SLJIT_ARG_TYPE_P_R  -> ptr;
+	?SLJIT_ARG_TYPE_TERM_R -> term;
 	?SLJIT_ARG_TYPE_F64 -> f64;
-	?SLJIT_ARG_TYPE_F32 -> f32;
-	?SLJIT_ARG_TYPE_TERM -> term
+	?SLJIT_ARG_TYPE_F32 -> f32
     end.
     
 %% enter argtypes
@@ -1648,12 +1538,16 @@ encode_args_(I, [Arg|As]) ->
 
 encode_arg(Arg) ->
     case Arg of
-	word -> ?SLJIT_ARG_TYPE_W_R;
-	word32 -> ?SLJIT_ARG_TYPE_32_R;
-	ptr -> ?SLJIT_ARG_TYPE_P_R;
-	f64 -> ?SLJIT_ARG_TYPE_F64;
-	f32 -> ?SLJIT_ARG_TYPE_F32;
-	term -> ?SLJIT_ARG_TYPE_TERM_R;
+	word     -> ?SLJIT_ARG_TYPE_W;
+	word32   -> ?SLJIT_ARG_TYPE_32;
+	ptr      -> ?SLJIT_ARG_TYPE_P;
+	term     -> ?SLJIT_ARG_TYPE_TERM;
+	word_r   -> ?SLJIT_ARG_TYPE_W_R;
+	word32_r -> ?SLJIT_ARG_TYPE_32_R;
+	ptr_r    -> ?SLJIT_ARG_TYPE_P_R;
+	term_r   -> ?SLJIT_ARG_TYPE_TERM_R;
+	f64      -> ?SLJIT_ARG_TYPE_F64;
+	f32      -> ?SLJIT_ARG_TYPE_F32;
 	_ when is_integer(Arg) -> Arg
     end.
 
@@ -1664,12 +1558,16 @@ decode_args(0, As) ->
     lists:reverse(As);
 decode_args(Type, As) ->
     A = case Type band 16#f of
-	    ?SLJIT_ARG_TYPE_W_R -> word;
-	    ?SLJIT_ARG_TYPE_32_R -> word32;
-	    ?SLJIT_ARG_TYPE_P_R -> ptr;
+	    ?SLJIT_ARG_TYPE_W -> word;
+	    ?SLJIT_ARG_TYPE_32 -> word32;
+	    ?SLJIT_ARG_TYPE_TERM -> term;
+	    ?SLJIT_ARG_TYPE_P -> ptr_r;
+	    ?SLJIT_ARG_TYPE_W_R -> word_r;
+	    ?SLJIT_ARG_TYPE_32_R -> word32_t;
+	    ?SLJIT_ARG_TYPE_TERM_R -> term_r;
+	    ?SLJIT_ARG_TYPE_P_R -> ptr_r;
 	    ?SLJIT_ARG_TYPE_F64 -> f64;
-	    ?SLJIT_ARG_TYPE_F32 -> f32;
-	    ?SLJIT_ARG_TYPE_TERM_R -> term
+	    ?SLJIT_ARG_TYPE_F32 -> f32
 	end,
     decode_args(Type bsr 4, [A|As]).
 
@@ -1734,172 +1632,117 @@ decode_call_type_flags(Type) ->
 	    []
     end.
 
-reg(r0) -> ?SLJIT_R0;
-reg(r1) -> ?SLJIT_R1;
-reg(r2) -> ?SLJIT_R2;
-reg(r3) -> ?SLJIT_R3;
-reg(r4) -> ?SLJIT_R4;
-reg(r5) -> ?SLJIT_R5;
-reg(r6) -> ?SLJIT_R6;
-reg(r7) -> ?SLJIT_R7;
-reg(r8) -> ?SLJIT_R8;
-reg(r9) -> ?SLJIT_R9;
-reg(r10) -> ?SLJIT_R(10);
-reg(r11) -> ?SLJIT_R(11);
-reg(r12) -> ?SLJIT_R(12);
-reg(r13) -> ?SLJIT_R(13);
-reg(r14) -> ?SLJIT_R(14);
-reg(r15) -> ?SLJIT_R(15);
-reg({r,I}) -> ?SLJIT_R(I);
-reg(s0) -> ?SLJIT_S0;
-reg(s1) -> ?SLJIT_S1;
-reg(s2) -> ?SLJIT_S2;
-reg(s3) -> ?SLJIT_S3;
-reg(s4) -> ?SLJIT_S4;
-reg(s5) -> ?SLJIT_S5;
-reg(s6) -> ?SLJIT_S6;
-reg(s7) -> ?SLJIT_S7;
-reg(s8) -> ?SLJIT_S8;
-reg(s9) -> ?SLJIT_S9;
-reg(s10) -> ?SLJIT_S(10);
-reg(s11) -> ?SLJIT_S(11);
-reg(s12) -> ?SLJIT_S(12);
-reg(s13) -> ?SLJIT_S(13);
-reg(s14) -> ?SLJIT_S(14);
-reg(s15) -> ?SLJIT_S(15);
-reg({s,I}) -> ?SLJIT_S(I);
-reg(sp) -> ?SLJIT_SP.
+%% translate short form registers to {r|s,I}
+%% except sp since we do not know that number here or 
+%% in a object file
+-spec reg(R::reg()) -> reg().
+reg(r0) -> {r,0};
+reg(r1) -> {r,1};
+reg(r2) -> {r,2};
+reg(r3) -> {r,3};
+reg(r4) -> {r,4};
+reg(r5) -> {r,5};
+reg(r6) -> {r,6};
+reg(r7) -> {r,7};
+reg(r8) -> {r,8};
+reg(r9) -> {r,9};
+reg(r10) -> {r,10};
+reg(r11) -> {r,11};
+reg(r12) -> {r,2};
+reg(r13) -> {r,13};
+reg(r14) -> {r,14};
+reg(r15) -> {r,15};
+reg({r,I}) when I >= 0, I =< 127 -> {r,I};
+reg(s0) -> {s,0};
+reg(s1) -> {s,1};
+reg(s2) -> {s,2};
+reg(s3) -> {s,3};
+reg(s4) -> {s,4};
+reg(s5) -> {s,5};
+reg(s6) -> {s,6};
+reg(s7) -> {s,7};
+reg(s8) -> {s,8};
+reg(s9) -> {s,9};
+reg(s10) -> {s,10};
+reg(s11) -> {s,11};
+reg(s12) -> {s,12};
+reg(s13) -> {s,13};
+reg(s14) -> {s,14};
+reg(s15) -> {s,15};
+reg({s,I}) when I >= 0, I =< 127 -> {s,I};
+reg(sp)    -> sp.
 
-%% decode reg
-dreg(?SLJIT_SP) -> sp;
-dreg(?SLJIT_R0) -> r0;
-dreg(?SLJIT_R1) -> r1;
-dreg(?SLJIT_R2) -> r2; 
-dreg(?SLJIT_R3) -> r3; 
-dreg(?SLJIT_R4) -> r4; 
-dreg(?SLJIT_R5) -> r5; 
-dreg(?SLJIT_R6) -> r6; 
-dreg(?SLJIT_R7) -> r7; 
-dreg(?SLJIT_R8) -> r8;
-dreg(?SLJIT_R9) -> r9;
-dreg(?SLJIT_R(10)) -> r10;
-dreg(?SLJIT_R(11)) -> r11;
-dreg(?SLJIT_R(12)) -> r12;
-dreg(?SLJIT_R(13)) -> r13;
-dreg(?SLJIT_R(14)) -> r14;
-dreg(?SLJIT_R(15)) -> r15;
-dreg(R) -> {r, 9+(R-?SLJIT_R9)}.
+-spec freg(R::freg()) -> freg().
+freg(fr0) -> {fr,0};
+freg(fr1) -> {fr,1};
+freg(fr2) -> {fr,2};
+freg(fr3) -> {fr,3};
+freg(fr4) -> {fr,4};
+freg(fr5) -> {fr,5};
+freg(fr6) -> {fr,6};
+freg(fr7) -> {fr,7};
+freg(fr8) -> {fr,8};
+freg(fr9) -> {fr,9};
+freg(fr10) -> {fr,10};
+freg(fr11) -> {fr,11};
+freg(fr12) -> {fr,12};
+freg(fr13) -> {fr,13};
+freg(fr14) -> {fr,14};
+freg(fr15) -> {fr,15};
+freg({fr,I}) when I >= 0, I =< 127 -> {fr,I};
+freg(fs0) -> {fs,0};
+freg(fs1) -> {fs,1};
+freg(fs2) -> {fs,2};
+freg(fs3) -> {fs,3};
+freg(fs4) -> {fs,4};
+freg(fs5) -> {fs,5};
+freg(fs6) -> {fs,6};
+freg(fs7) -> {fs,7};
+freg(fs8) -> {fs,8};
+freg(fs9) -> {fs,9};
+freg(fs10) -> {fs,10};
+freg(fs11) -> {fs,11};
+freg(fs12) -> {fs,12};
+freg(fs13) -> {fs,13};
+freg(fs14) -> {fs,14};
+freg(fs15) -> {fs,15};
+freg({fs,I}) when I >= 0, I =< 127 -> {fs,I}.
 
-freg(fr0) -> ?SLJIT_FR0;
-freg(fr1) -> ?SLJIT_FR1;
-freg(fr2) -> ?SLJIT_FR2;
-freg(fr3) -> ?SLJIT_FR3;
-freg(fr4) -> ?SLJIT_FR4;
-freg(fr5) -> ?SLJIT_FR5;
-freg(fr6) -> ?SLJIT_FR6;
-freg(fr7) -> ?SLJIT_FR7;
-freg(fr8) -> ?SLJIT_FR8;
-freg(fr9) -> ?SLJIT_FR9;
-freg(fr10) -> ?SLJIT_FR(10);
-freg(fr11) -> ?SLJIT_FR(11);
-freg(fr12) -> ?SLJIT_FR(12);
-freg(fr13) -> ?SLJIT_FR(13);
-freg(fr14) -> ?SLJIT_FR(14);
-freg(fr15) -> ?SLJIT_FR(15);
-freg({fr,I}) -> ?SLJIT_FR(I);
-
-freg(fs0) -> ?SLJIT_FS0;
-freg(fs1) -> ?SLJIT_FS1;
-freg(fs2) -> ?SLJIT_FS2;
-freg(fs3) -> ?SLJIT_FS3;
-freg(fs4) -> ?SLJIT_FS4;
-freg(fs5) -> ?SLJIT_FS5;
-freg(fs6) -> ?SLJIT_FS6;
-freg(fs7) -> ?SLJIT_FS7;
-freg(fs8) -> ?SLJIT_FS8;
-freg(fs9) -> ?SLJIT_FS9;
-freg(fs10) -> ?SLJIT_FS(10);
-freg(fs11) -> ?SLJIT_FS(11);
-freg(fs12) -> ?SLJIT_FS(12);
-freg(fs13) -> ?SLJIT_FS(13);
-freg(fs14) -> ?SLJIT_FS(14);
-freg(fs15) -> ?SLJIT_FS(15);
-freg({fs,I}) -> ?SLJIT_FS(I).
-
-%% decode freg
-dfreg(?SLJIT_FR0) -> fr0;
-dfreg(?SLJIT_FR1) -> fr1;
-dfreg(?SLJIT_FR2) -> fr2; 
-dfreg(?SLJIT_FR3) -> fr3; 
-dfreg(?SLJIT_FR4) -> fr4; 
-dfreg(?SLJIT_FR5) -> fr5;
-dfreg(?SLJIT_FR6) -> fr6;
-dfreg(?SLJIT_FR7) -> fr7;
-dfreg(?SLJIT_FR8) -> fr8;
-dfreg(?SLJIT_FR9) -> fr9;
-dfreg(?SLJIT_FR(10)) -> fr10;
-dfreg(?SLJIT_FR(11)) -> fr11;
-dfreg(?SLJIT_FR(12)) -> fr12; 
-dfreg(?SLJIT_FR(13)) -> fr13; 
-dfreg(?SLJIT_FR(14)) -> fr14; 
-dfreg(?SLJIT_FR(15)) -> fr15;
-dfreg(R) -> {fr, 9+(R-?SLJIT_FR9)}.
-
-
-vreg(vr0) -> ?SLJIT_VR0;
-vreg(vr1) -> ?SLJIT_VR1;
-vreg(vr2) -> ?SLJIT_VR2;
-vreg(vr3) -> ?SLJIT_VR3;
-vreg(vr4) -> ?SLJIT_VR4;
-vreg(vr5) -> ?SLJIT_VR5;
-vreg(vr6) -> ?SLJIT_VR6;
-vreg(vr7) -> ?SLJIT_VR7;
-vreg(vr8) -> ?SLJIT_VR8;
-vreg(vr9) -> ?SLJIT_VR9;
-vreg(vr10) -> ?SLJIT_VR(10);
-vreg(vr11) -> ?SLJIT_VR(11);
-vreg(vr12) -> ?SLJIT_VR(12);
-vreg(vr13) -> ?SLJIT_VR(13);
-vreg(vr14) -> ?SLJIT_VR(14);
-vreg(vr15) -> ?SLJIT_VR(15);
-vreg({vr,I}) -> ?SLJIT_VR(I);
-
-vreg(vs0) -> ?SLJIT_VS0;
-vreg(vs1) -> ?SLJIT_VS1;
-vreg(vs2) -> ?SLJIT_VS2;
-vreg(vs3) -> ?SLJIT_VS3;
-vreg(vs4) -> ?SLJIT_VS4;
-vreg(vs5) -> ?SLJIT_VS5;
-vreg(vs6) -> ?SLJIT_VS6;
-vreg(vs7) -> ?SLJIT_VS7;
-vreg(vs8) -> ?SLJIT_VS8;
-vreg(vs9) -> ?SLJIT_VS9;
-vreg(vs10) -> ?SLJIT_VS(10);
-vreg(vs11) -> ?SLJIT_VS(11);
-vreg(vs12) -> ?SLJIT_VS(12);
-vreg(vs13) -> ?SLJIT_VS(13);
-vreg(vs14) -> ?SLJIT_VS(14);
-vreg(vs15) -> ?SLJIT_VS(15);
-vreg({vs,I}) -> ?SLJIT_VS(I).
-
-%% decode reg
-dvreg(?SLJIT_VR0) -> vr0;
-dvreg(?SLJIT_VR1) -> vr1;
-dvreg(?SLJIT_VR2) -> vr2; 
-dvreg(?SLJIT_VR3) -> vr3; 
-dvreg(?SLJIT_VR4) -> vr4; 
-dvreg(?SLJIT_VR5) -> vr5; 
-dvreg(?SLJIT_VR6) -> vr6; 
-dvreg(?SLJIT_VR7) -> vr7; 
-dvreg(?SLJIT_VR8) -> vr8;
-dvreg(?SLJIT_VR9) -> vr9;
-dvreg(?SLJIT_VR(10)) -> vr10;
-dvreg(?SLJIT_VR(11)) -> vr11;
-dvreg(?SLJIT_VR(12)) -> vr12;
-dvreg(?SLJIT_VR(13)) -> vr13;
-dvreg(?SLJIT_VR(14)) -> vr14;
-dvreg(?SLJIT_VR(15)) -> vr15;
-dvreg(R) -> {r, 9+(R-?SLJIT_R9)}.
+-spec vreg(R::vreg()) -> vreg().
+vreg(vr0) -> {vr,0};
+vreg(vr1) -> {vr,1};
+vreg(vr2) -> {vr,2};
+vreg(vr3) -> {vr,3};
+vreg(vr4) -> {vr,4};
+vreg(vr5) -> {vr,5};
+vreg(vr6) -> {vr,6};
+vreg(vr7) -> {vr,7};
+vreg(vr8) -> {vr,8};
+vreg(vr9) -> {vr,9};
+vreg(vr10) -> {vr,10};
+vreg(vr11) -> {vr,11};
+vreg(vr12) -> {vr,12};
+vreg(vr13) -> {vr,13};
+vreg(vr14) -> {vr,14};
+vreg(vr15) -> {vr,15};
+vreg({vr,I}) when I >= 0, I =< 127 -> {vr,I};
+vreg(vs0) -> {vs,0};
+vreg(vs1) -> {vs,1};
+vreg(vs2) -> {vs,2};
+vreg(vs3) -> {vs,3};
+vreg(vs4) -> {vs,4};
+vreg(vs5) -> {vs,5};
+vreg(vs6) -> {vs,6};
+vreg(vs7) -> {vs,7};
+vreg(vs8) -> {vs,8};
+vreg(vs9) -> {vs,9};
+vreg(vs10) -> {vs,10};
+vreg(vs11) -> {vs,11};
+vreg(vs12) -> {vs,12};
+vreg(vs13) -> {vs,13};
+vreg(vs14) -> {vs,14};
+vreg(vs15) -> {vs,15};
+vreg({vs,I}) when I >= 0, I =< 127 -> {vs,I}.
 
 %%
 %% Encode arguments using function signature
@@ -1956,50 +1799,3 @@ encode_fmt_sarg_(X,Acc) ->
 	    list_to_binary([((C bor 16#40) bor (X band 16#3f)) | Acc])
     end.
 
-decode_fmt_args(Sig, Bin) ->
-    decode_fmt_args(Sig, Bin, []).
-
-decode_fmt_args([$u|Sig], Bin, Acc) ->
-    {Arg, Bin1} = decode_fmt_arg(Bin),
-    decode_fmt_args(Sig, Bin1, [Arg | Acc]);
-decode_fmt_args([$i|Sig], Bin, Acc) ->
-    {Arg, Bin1} = decode_fmt_arg(Bin),
-    decode_fmt_args(Sig, Bin1, [Arg | Acc]);
-decode_fmt_args([$j|Sig], Bin, Acc) ->
-    {Arg, Bin1} = decode_fmt_arg(Bin),
-    decode_fmt_args(Sig, Bin1, [Arg | Acc]);
-decode_fmt_args([$f|Sig], <<Arg:32/float,Bin/binary>>, Acc) ->
-    decode_fmt_args(Sig, Bin, [Arg | Acc]);
-decode_fmt_args([$d|Sig], <<Arg:64/float,Bin/binary>>, Acc) ->
-    decode_fmt_args(Sig, Bin, [Arg | Acc]);
-decode_fmt_args([$s|Sig], Bin, Acc) ->
-    {Arg,Bin1} = decode_string(Bin, []),
-    decode_fmt_args(Sig, Bin1, [Arg | Acc]);
-decode_fmt_args([$v|Sig], <<Sz,Bin:Sz/binary,Bin1/binary>>, Acc) ->
-    Arg = binary_to_term(Bin),
-    decode_fmt_args(Sig, Bin1, [Arg | Acc]);
-decode_fmt_args([], <<>>, Acc) ->
-    lists:reverse(Acc).
-
-decode_string(<<C,Bin/binary>>, Acc) ->
-    if C =:= 0 -> {lists:reverse(Acc), Bin};
-       true -> decode_string(Bin, [C | Acc])
-    end.
-
-decode_fmt_arg(<<0:1,S:1,Vn:6, Bin/binary>>) ->
-    if S =:= 0 -> %% non-negative >= 0
-	    {Vn, Bin};
-       true -> %% negative
-	    {(Vn-64), Bin}
-    end;
-decode_fmt_arg(<<1:1,S:1,Vn:6, Bin/binary>>) ->
-    if S =:= 0 -> %% non-negative >= 0
-	    decode_fmt_arg_(Bin, Vn);
-       true -> %% negative
-	    decode_fmt_arg_(Bin, (Vn-64))
-    end.
-
-decode_fmt_arg_(<<0:1,V:7,Bin/binary>>, V0) ->
-    {(V0 bsl 7) bor V, Bin};
-decode_fmt_arg_(<<1:1,V:7,Bin/binary>>, V0) ->
-    decode_fmt_arg_(Bin, (V0 bsl 7) bor V).

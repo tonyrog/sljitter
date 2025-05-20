@@ -70,6 +70,3 @@ load_efloat() ->
     Compile = sljit:create_compiler(),
     sljit_asm:asm_ins_list(Compile, make_efloat(), #{}),
     sljit:generate_code(Compile).
-
-    
-    

@@ -9,6 +9,7 @@
 
 -on_load(init/0).
 -export([get_platform_name/0]).
+-export([get_platform_info/0]).
 -export([cpu_features/0]).
 -export([cpu_feature/1]).
 -export([has_cpu_feature/1]).
@@ -21,17 +22,18 @@
 -export([disasm/1]).
 -export([code_info/1, code_info/2]).
 -export([call/1, call/2, call/3, call/4, call/5]).
+-export([emit_op_src/3]).
+-export([emit_op_dst/3]).
 -export([emit_op0/2]).
--export([emit_op1/6]).
--export([emit_op2/8]).
--export([emit_op2u/6]).
--export([emit_op2r/7]).
--export([emit_shift_into/7]).
--export([emit_op_src/4]).
--export([emit_op_dst/4]).
--export([emit_fop1/6]).
--export([emit_fop2/8]).
--export([emit_fop2r/7]).
+-export([emit_op1/4]).
+-export([emit_op2u/4]).
+-export([emit_op2/5]).
+-export([emit_op2r/5]).
+-export([emit_shift_into/6]).
+
+-export([emit_fop1/4]).
+-export([emit_fop2/5]).
+-export([emit_fop2r/5]).
 -export([emit_fset32/3]).
 -export([emit_fset64/3]).
 -export([emit_fcopy/4]).
@@ -46,24 +48,24 @@
 -export([emit_label/1]).
 -export([emit_jump/2]).
 -export([emit_call/3]).
--export([emit_cmp/6]).
--export([emit_fcmp/6]).
+-export([emit_cmp/4]).
+-export([emit_fcmp/4]).
 -export([set_label/2]).
 -export([set_target/2]).
--export([emit_ijump/4]).
--export([emit_icall/5]).
+-export([emit_ijump/3]).
+-export([emit_icall/4]).
 -export([emit_mcall/5]).
 -export([emit_mjump/4]).
 -export([emit_enter/6]).
 -export([set_context/6]).
--export([emit_return/4]).
+-export([emit_return/3]).
 -export([emit_return_void/1]).
--export([emit_return_to/3]).
--export([emit_simd_op2/6]).
+-export([emit_return_to/2]).
+-export([emit_simd_op2/5]).
 -export([get_label_addr/1]).
--export([emit_const/5]).
+-export([emit_const/4]).
 -export([set_constant/2, set_constant/3]).
--export([emit_op_addr/4]).
+-export([emit_op_addr/3]).
 -export([set_jump/2, set_jump/3]).
 
 %% -export([emit_select/6]).
@@ -92,6 +94,55 @@
 		ppc_32 | ppc_64 | mips_32 | mips_64 | riscv_32 | riscv_64 |
 		s390x | loongarch_64 | emulator.
 
+-type gp_reg() :: r0 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 |
+		  r10 | r11 | r12 | r13 | r14 | r15 | {r, 0..255}.
+-type saved_reg() :: s0 | s1 | s2 | s3 | s4 | s5 | s6 | s7 | s8 | s9 |
+		     s10 | s11 | s12 | s13 | s14 | s15 | {s, 0..255}.
+-type reg() :: gp_reg() | saved_reg() | sp.
+
+-type float_reg() :: 
+	fr0 | fr1 | fr2 | fr3 | fr4 | fr5 | fr6 | fr7 | fr8 | fr9 |
+	fr10 | fr11 | fr12 | fr13 | fr14 | fr15 | {fr, 0..255}.
+-type float_saved_reg() ::
+	fs0 | fs1 | fs2 | fs3 | fs4 | fs5 | fs6 | fs7 | fs8 | fs9 |
+	fs10 | fs11 | fs12 | fs13 | fs14 | fs15 | {fs, 0..255}.
+-type freg() :: float_reg() | float_saved_reg().
+
+-type vec_reg() :: vr0 | vr1 | vr2 | vr3 | vr4 | vr5 | vr6 | vr7 | vr8 | vr9 |
+		   vr10 | vr11 | vr12 | vr13 | vr14 | vr15 | {vr, 0..255}.
+-type vec_saved_reg() ::
+	vs0 | vs1 | vs2 | vs3 | vs4 | vs5 | vs6 | vs7 | vs8 | vs9 | 
+	vs10 | vs11 | vs12 | vs13 | vs14 | vs15 | {vs, 0..255}.
+-type vreg() :: vec_reg() | vec_saved_reg().
+
+-type named_constant() :: vsize.
+ 
+-type value() :: integer() | named_constant().
+-type scale() :: 0|1|2|3.  %% = 1,2,4,8
+
+-type mem() :: {mem, value()} |                %% [imm]
+	       {mem, reg()} |                  %% [reg]
+	       {mem, reg(), value()} |         %% [reg + imm]
+	       {mem, reg(), reg()} |           %% [reg + reg]
+	       {mem, reg(), reg(), scale()}.   %% [reg + (reg<<imm)]
+
+-type imm() :: {imm, value()}.
+
+-type dst() :: mem() | reg().
+-type src() :: mem() | reg() | imm().
+
+-type fdst() :: mem() | freg().
+-type fsrc() :: mem() | freg().
+
+%%-type vdst() :: mem() | vreg().
+-type vsrc() :: mem() | vreg().
+
+
+-export_type([gp_reg/0, saved_reg/0, reg/0]).
+-export_type([float_reg/0, float_saved_reg/0, freg/0]).
+-export_type([vec_reg/0, vec_saved_reg/0, vreg/0]).
+-export_type([imm/0, mem/0, dst/0, src/0]).
+
 -include("../include/sljit.hrl").
 
 -define(nif_stub(),
@@ -111,6 +162,22 @@ create_compiler(_Arch) ->
 
 -spec get_platform_name() -> string().
 get_platform_name() ->
+    ?nif_stub().
+
+-type platform_info() :: #{ number_of_registers => integer(),
+			    number_of_scratch_registers  => integer(),
+			    number_of_saved_registers  => integer(),
+			    number_of_float_registers  => integer(),
+			    number_of_saved_float_registers  => integer(),
+			    number_of_vector_registers  => integer(),
+			    number_of_saved_vector_registers  => integer(),
+			    return_reg  => integer(),
+			    sp  => integer(),
+			    vsize  => integer(),
+			    name => string() }.
+-spec get_platform_info() -> 
+	  #{ atom() => platform_info() }.
+get_platform_info() ->
     ?nif_stub().
 
 feature_map() ->
@@ -223,79 +290,68 @@ emit_op0(_Compiler, _Op) ->
     ?nif_stub().
 
 -spec emit_op1(compiler(), Op::integer(),
-	       Dst::integer(), Dstw::integer(),
-	       Src::integer(), Srcw::integer()) -> ok.
-emit_op1(_Compiler, _Op, _Dst, _Dstw, _Src, _Srcw) ->
+	       Dst::dst(), Src::src()) -> ok.
+emit_op1(_Compiler, _Op, _Dst, _Src) ->
     ?nif_stub().
 
 -spec emit_op2(compiler(), Op::integer(),
-	       Dst::integer(), Dstw::integer(),
-	       Src1::integer(), Src1w::integer(),
-	       Src2::integer(), Src2w::integer()) -> ok.
-emit_op2(_Compiler, _Op, _Dst, _Dstw, _Src1, _Src1w, _Src2, _Src2w) ->
+	       Dst::dst(), Src1::src(), Src2::src()) -> ok.
+emit_op2(_Compiler, _Op, _Dst, _Src1, _Src2) ->
     ?nif_stub().
 
 -spec emit_op2u(compiler(), Op::integer(),
-		Src1::integer(), Src1w::integer(),
-		Src2::integer(), Src2w::integer()) -> ok.
-emit_op2u(_Compiler, _Op, _Src1, _Src1w, _Src2, _Src2w) ->
+		Src1::src(), Src2::src()) -> ok.
+emit_op2u(_Compiler, _Op, _Src1, _Src2) ->
     ?nif_stub().
 
 -spec emit_op2r(compiler(), Op::integer(),
-		DstReg::integer(),
-		Src1::integer(), Src1w::integer(),
-		Src2::integer(), Src2w::integer()) -> ok.
+		Dst::reg(), Src1::src(), Src2::src()) -> ok.
 
-emit_op2r(_Compiler, _Op, _DstReg, _Src1, _Src1w, _Src2, _Src2w) ->
+emit_op2r(_Compiler, _Op, _Dst, _Src1, _Src2) ->
     ?nif_stub().
 
 -spec emit_shift_into(compiler(), Op::integer(),
-		      DstReg::integer(),
-		      Src1Reg::integer(), Src2Reg::integer(),
-		      Src3::integer(), Src3w::integer()) -> ok.
+		      Dst::reg(), Src1::reg(), Src2::reg(), Src3::src()) -> ok.
 
-emit_shift_into(_Compiler, _Op, _DstReg, _Src1Reg, _Src2Reg, _Src3, _Src3w) ->
+emit_shift_into(_Compiler, _Op, _Dst, _Src1, _Src2, _Src3) ->
     ?nif_stub().
 
--spec emit_op_src(compiler(), Op::integer(), Src::integer(), Srcw::integer()) ->
+-spec emit_op_src(compiler(), Op::integer(), Src::src()) ->
 	  ok.
-emit_op_src(_Compiler, _Op, _Src, _Srcw) ->
+emit_op_src(_Compiler, _Op, _Src) ->
     ?nif_stub().
 
--spec emit_op_dst(compiler(), Op::integer(), Dst::integer(), Dstw::integer()) ->
+-spec emit_op_dst(compiler(), Op::integer(), Dst::dst()) ->
 	  ok.
-emit_op_dst(_Compiler, _Op, _Dst, _Dstw) ->
+emit_op_dst(_Compiler, _Op, _Dst) ->
     ?nif_stub().
 
--spec emit_fop1(compiler(), Op::integer(), Dst::integer(), Dstw::integer(),
-		Src::integer(), Srcw::integer()) -> ok.
-emit_fop1(_Compiler, _Op, _Dst, _Dstw, _Src, _Srcw) ->
+-spec emit_fop1(compiler(), Op::integer(),Dst::fdst(),Src::fsrc()) -> ok.
+emit_fop1(_Compiler, _Op, _Dst, _Src) ->
     ?nif_stub().
 
--spec emit_fop2(compiler(), Op::integer(), Dst::integer(), Dstw::integer(),
-		Src1::integer(), Src1w::integer(),
-		Src2::integer(), Src2w::integer()) ->
+-spec emit_fop2(compiler(), Op::integer(), 
+		Dst::fdst(),Src1::fsrc(),Src2::fsrc()) ->
 	   ok.
 		
-emit_fop2(_Compiler, _Op, _Dst, _Dstw, _Src1, _Src1w, _Src2, _Src2w) ->
+emit_fop2(_Compiler, _Op, _Dst, _Src1, _Src2) ->
     ?nif_stub().
 
--spec emit_fop2r(compiler(), Op::integer(), DstReg::integer(),
-		 Src1::integer(), Src1w::integer(),
-		 Src2::integer(), Src2w::integer()) ->
+-spec emit_fop2r(compiler(), Op::integer(), 
+		 Dst::freg(),Src1::fsrc(), Src2::fsrc()) ->
 	  ok.
-emit_fop2r(_Compiler, _Op, _DstReg, _Src1, _Src1w, _Src2, _Src2w) ->
+emit_fop2r(_Compiler, _Op, _Dst, _Src1, _Src2) ->
 	?nif_stub().
 
--spec emit_fset32(compiler(), FReg::integer(), Value::float()) -> ok.
+-spec emit_fset32(compiler(), FReg::freg(), Value::float()) -> ok.
 emit_fset32(_Compiler, _FReg, _Value) ->
     ?nif_stub().
 
--spec emit_fset64(compiler(), FReg::integer(), Value::float()) -> ok.
+-spec emit_fset64(compiler(), FReg::freg(), Value::float()) -> ok.
 emit_fset64(_Compiler, _FReg, _Value) ->
     ?nif_stub().
 
--spec emit_fcopy(compiler(), Op::integer(), FReg::integer(), Reg::integer()) ->
+-spec emit_fcopy(compiler(), Op::integer(), FReg::freg(), Reg::reg()) ->
 	  ok.
 emit_fcopy(_Compiler, _OP, _FReg, _Reg) ->
     ?nif_stub().
@@ -321,7 +377,7 @@ module(_Compiler, _Name) ->
     ?nif_stub().
 
 %% Set current function name
--spec function(compiler(), Name::atom()) -> ok.
+-spec function(compiler(), Name::atom()) -> label().
 function(_Compiler, _Name) ->
     ?nif_stub().
 
@@ -358,13 +414,14 @@ emit_call(_Compiler, _Type, _ArgTypes) ->
 emit_mcall(_Compiler, _Type, _ArgTypes, _Mod, _Fun) ->
     ?nif_stub().
 
--spec emit_cmp(compiler(), _Type::integer(), _Src1::integer(), _Src1w::integer(), _Src2::integer(), _Src2w::integer()) -> jump().
-emit_cmp(_Compiler, _Type, _Src1, _Src1w, _Src2, _Src2w) ->
+-spec emit_cmp(compiler(), _Type::integer(), 
+	       _Src1::src(), _Src2::src()) -> jump().
+emit_cmp(_Compiler, _Type, _Src1, _Src2) ->
     ?nif_stub().
 
--spec emit_fcmp(compiler(), Type::integer(), Src1::integer(), Src1w::integer(),
-		Src2::integer(), Src2w::integer()) -> jump().
-emit_fcmp(_Compiler, _Type, _Src1, _Src1w, _Src2, _Src2w) ->
+-spec emit_fcmp(compiler(), Type::integer(), 
+		Src1::fsrc(), Src2::fsrc()) -> jump().
+emit_fcmp(_Compiler, _Type, _Src1, _Src2) ->
 	?nif_stub().
 
 -spec set_label(jump(), label()) -> ok.
@@ -376,8 +433,8 @@ set_target(_Jump, _Target) ->
     ?nif_stub().
 
 -spec emit_ijump(compiler(), Type::integer(), 
-		 Src::integer(), Srcw::integer()) -> jump().
-emit_ijump(_Compiler, _Type, _Src, _Srcw) ->
+		 Src::src()) -> jump().
+emit_ijump(_Compiler, _Type, _Src) ->
     ?nif_stub().
 
 -spec emit_mjump(compiler(), Type::integer(),
@@ -386,8 +443,8 @@ emit_mjump(_Compiler, _Type, _Mod, _Fun) ->
     ?nif_stub().
 
 -spec emit_icall(compiler(), Type::integer(), ArgTypes::integer(),
-		 Src::integer(), Srcw::integer()) -> ok | {error, term()}.
-emit_icall(_Compiler, _Type, _ArgTypes, _Src, _Srcw) ->
+		 Src::src()) -> ok | {error, term()}.
+emit_icall(_Compiler, _Type, _ArgTypes, _Src) ->
     ?nif_stub().
 
 -spec emit_enter(compiler(), Options::integer(), 
@@ -402,21 +459,21 @@ emit_enter(_Compiler, _Options, _ArgTypes, _Scratches, _Saveds, _LocalSize) ->
 set_context(_Compiler, _Options, _ArgTypes, _Scratches, _Saveds, _LocalSize) ->
     ?nif_stub().
 
--spec emit_return(compiler(), Op::integer(),
-		  Src::integer(), Srcw::integer()) -> ok.
-emit_return(_Compiler, _Op, _Src, _Srcw) ->
+-spec emit_return(compiler(), Op::integer(), Src::integer()) -> ok.
+emit_return(_Compiler, _Op, _Src) ->
     ?nif_stub().
 
 -spec emit_return_void(compiler()) -> ok.
 emit_return_void(_Compiler) ->
     ?nif_stub().
 
--spec emit_return_to(compiler(), Src::integer(), Srcw::integer()) -> ok.
-emit_return_to(_Compiler, _Src, _Srcw) ->
+-spec emit_return_to(compiler(), Src::integer()) -> ok.
+emit_return_to(_Compiler, _Src) ->
     ?nif_stub().
 
--spec emit_simd_op2(compiler(), Type::integer(), DstVReg::integer(), Src1VReg::integer(), Src2::integer(), Src2w::integer()) -> ok.
-emit_simd_op2(_Compiler, _Type, _DstVreg, _Src1VReg, _Src2, _Src2w) -> 
+-spec emit_simd_op2(compiler(), Type::integer(), 
+		    DstVReg::vreg(), Src1::vreg(), Src2::vsrc()) -> ok.
+emit_simd_op2(_Compiler, _Type, _Dst, _Src1, _Src2) -> 
     ?nif_stub().
 
 -spec get_label_addr(Label::label()) -> integer().
@@ -429,10 +486,9 @@ get_label_addr(_Label) ->
 %% SLJIT_MOV_S32,
 %% SLJIT_MOV_U8,   (init value may be 9 signed bits????)
 %% SLJIT_MOV32_U8
--spec emit_const(compiler(), Op::integer(),
-		 Dst::integer(), Dstw::integer(), 
+-spec emit_const(compiler(), Op::integer(),Dst::reg(),
 		 InitValue::integer()|atom()) -> const().
-emit_const(_Compiler, _Op, _Dst, _DstW, _InitValue) -> 
+emit_const(_Compiler, _Op, _Dst, _InitValue) -> 
     ?nif_stub().
 
 
@@ -447,11 +503,10 @@ set_constant(_CodeOrMod, _Name, _NewConstant) ->
 %% op is one off
 %% SLJIT_MOV_ADDR     -- The address is suitable for jump/call target.
 %% SLJIT_MOV_ABS_ADDR -- The address is suitable for reading memory.
--spec emit_op_addr(Compiler::compiler(),  Op::integer(),
-		   Dst::integer(), Dstw::integer()) ->
+-spec emit_op_addr(Compiler::compiler(),  Op::integer(), Dst::integer()) ->
 	  jump().
 
-emit_op_addr(_Compiler, _Op, _Dst, _Dstw) ->
+emit_op_addr(_Compiler, _Op, _Dst) ->
     ?nif_stub().
 
 -spec set_jump({CodeOrMod::code()|atom(), Name::atom()}, NewTarget::atom()) ->
