@@ -15,8 +15,8 @@
 
 #include "sljitter_backend.h"
 
-// #define NIF_TRACE
-// #define DEBUG
+#define NIF_TRACE
+#define DEBUG
 
 #define UNUSED(a) ((void) a)
 
@@ -1481,6 +1481,116 @@ ERL_NIF_TERM nif_code_info(ErlNifEnv* env, int argc,
     return EXCP_BADARG_N(env, 1, "unknown info");
 }
 
+#if __SIZEOF_POINTER__ == 8
+#  define TAG_PTR_MASK__	0x7
+#  define FLOAT_WORDS 2
+#elif __SIZEOF_POINTER__ == 4
+#  define TAG_PTR_MASK__	0x3
+#  define FLOAT_WORDS 3
+#else
+#error "__SIZEOF_POINTER__ unknown"
+#endif
+
+#define _TAG_PRIMARY_SIZE	2
+#define _TAG_PRIMARY_MASK	0x3
+#define TAG_PRIMARY_HEADER	0x0
+#define TAG_PRIMARY_LIST	0x1
+#define TAG_PRIMARY_BOXED	0x2
+#define TAG_PRIMARY_IMMED1	0x3
+
+#define primary_tag(x)	((x) & _TAG_PRIMARY_MASK)
+#define ptr_val(x)	((ERL_NIF_TERM*) ((x) & ~((ERL_NIF_TERM) TAG_PTR_MASK__)))
+#define offset_ptr(x,offs)	((x)+((offs)*sizeof(ERL_NIF_TERM)))
+#define in_area(Ptr,Area,Sz) (((char*)(Ptr) - (char*)(Area)) < (long)(Sz))
+
+// Offset pointers to heap 
+static void offset_heap_ptr(ERL_NIF_TERM* hp, size_t sz, long offs,
+			    char* area, size_t area_sz)
+{
+    while (sz--) {
+	ERL_NIF_TERM val = *hp;
+	switch (primary_tag(val)) {
+	case TAG_PRIMARY_LIST:
+	case TAG_PRIMARY_BOXED:
+	    if (in_area(ptr_val(val), area, area_sz)) {
+		*hp = offset_ptr(val, offs);
+	    }
+	    hp++;
+	    break;
+	default:
+	    hp++;
+	    break;
+	}
+    }
+}
+
+// copy erlang term from global memory to emulator "sand boxed" memory
+ERL_NIF_TERM copy_term_to_mem(ErlNifEnv* env, nif_ctx_t* ctx,
+			      ERL_NIF_TERM term, long* dpp)
+{
+    ERL_NIF_TERM term1;    
+    ERL_NIF_TERM copy;
+    ERL_NIF_TERM* term_ptr;
+    ERL_NIF_TERM* term1_ptr;    
+    ERL_NIF_TERM* float_ptr;
+    const ERL_NIF_TERM* elems;
+    int arity;
+    size_t size;
+    long dp = *dpp;
+    emulator_state_t* st = &ctx->emu;
+
+    // generate {Term, 0.0}
+    term1 = enif_make_tuple2(env, enif_make_double(env, 0.0), term);
+    // flatten
+    copy = enif_make_copy(env, term1);
+    
+    if (!enif_get_tuple(env, copy, &arity, &elems) || (arity != 2))
+	return 0;
+
+    term1_ptr = ptr_val(term1);
+    float_ptr  = ptr_val(elems[0]);
+    term_ptr = ptr_val(elems[1]);
+
+    DBG("term_ptr=%p\r\n", term_ptr);
+    DBG("float_ptr=%p\r\n", float_ptr);
+
+    size = (float_ptr - term1_ptr);
+    
+    DBG("copy_term_to_mem: size(words)=%lu\r\n", size);
+    
+    if (size == 3) { // object is atomic
+	memcpy(st->mem_base+dp, &term, sizeof(term));
+	*dpp = dp + sizeof(term);
+	return term;
+    }
+    else {
+	// fixme alin dp
+	ERL_NIF_TERM* dst = (ERL_NIF_TERM*)(st->mem_base+dp);
+	ERL_NIF_TERM* copy_ptr = ptr_val(copy);
+	long offs;
+	size += FLOAT_WORDS;  // object size
+
+	DBG("copy_term_to_mem: dp=%d, memcpy size(words)=%lu\r\n", dp, size);
+
+	memcpy(dst, copy_ptr, size*sizeof(ERL_NIF_TERM));
+	// mem start address is dp
+	offs = (ERL_NIF_TERM*)dp - copy_ptr;
+	offset_heap_ptr(dst, size, offs,
+			(char*)copy_ptr, size*sizeof(ERL_NIF_TERM));
+	*dpp = dp + size*sizeof(ERL_NIF_TERM);
+	DBG("copy = %T\r\n", copy_ptr[2]);
+	// return copy_ptr[2];  // object ref is element(2, copy)
+	return dst[2];
+    }
+}
+
+// copy erlang term from "sand boxed" memory to erts
+ERL_NIF_TERM copy_term_from_mem(ErlNifEnv* env, nif_ctx_t* ctx,
+				ERL_NIF_TERM term)
+{
+    // FIXME: copy to erlang
+    return term;
+}
 
 ERL_NIF_TERM emulator_call(ErlNifEnv* env, code_t* crp,
 			   export_entry_t* xent,
@@ -1492,7 +1602,7 @@ ERL_NIF_TERM emulator_call(ErlNifEnv* env, code_t* crp,
     nif_ctx_t* ctx = get_ctx(env);
     emulator_state_t* st = &ctx->emu;
     sljit_s32 arg_types = xent->arg_types;
-    sljit_uw dp = 0; // data pointer
+    long dp = 0; // data pointer
     int i;
 
     // setup thread context, preserve registers...?
@@ -1521,7 +1631,10 @@ ERL_NIF_TERM emulator_call(ErlNifEnv* env, code_t* crp,
 	switch(ARGTYPE(arg_types, i)) {
 	case SLJIT_ARG_TYPE_TERM:
 	case SLJIT_ARG_TYPE_TERM_R:
-	    arg[i].sw = (sljit_sw) argv[i];
+	    if (crp->backend->arch == SLJITTER_ARCH_EMULATOR)
+		arg[i].sw = (sljit_sw) copy_term_to_mem(env,ctx, argv[i],&dp);
+	    else
+		arg[i].sw = (sljit_sw) argv[i];
 	    break;
 	case SLJIT_ARG_TYPE_W:
 	case SLJIT_ARG_TYPE_W_R:
@@ -1564,19 +1677,22 @@ ERL_NIF_TERM emulator_call(ErlNifEnv* env, code_t* crp,
 	    return EXCP_BADARG_N(env, i, "internal error");
 	}
     }
-
+    
     if (crp->backend->run) {
 	(crp->backend->run)(&ctx->emu, crp->addr, crp->code_size,
 			    (void*) xent->addr,
 			    (void*) &arg[0], arg_types, (void*) &ret);
     }
-
+    
     switch(ARGTYPE_RET(arg_types)) {
     case SLJIT_ARG_TYPE_RET_VOID:
 	return ATOM(ok);
     case SLJIT_ARG_TYPE_TERM:
     case SLJIT_ARG_TYPE_TERM_R:
-	return (ERL_NIF_TERM) ret.sw;
+	if (crp->backend->arch == SLJITTER_ARCH_EMULATOR)
+	    return copy_term_from_mem(env, ctx, (ERL_NIF_TERM) ret.sw);
+	else
+	    return (ERL_NIF_TERM) ret.sw;
     case SLJIT_ARG_TYPE_W:
     case SLJIT_ARG_TYPE_W_R:
 	return make_sw(env, ret.sw);
@@ -1998,10 +2114,10 @@ ERL_NIF_TERM nif_emit_fset32(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
     
     if (!enif_get_resource(env, argv[0], compiler_res, (void**)&cp))
 	return EXCP_BADARG_N(env, 0, "not a compiler");
-    if (!get_s32(env, argv[1], &freg))
-	return EXCP_BADARG_N(env, 2, "not an integer");
+    if (!get_reg(env, cp, argv[1], REG_F, &freg))
+	return EXCP_BADARG_N(env, 1, "bad destination");
     if (!get_float(env, argv[2], &value))
-	return EXCP_BADARG_N(env, 3, "not a float");
+	return EXCP_BADARG_N(env, 2, "not a float");
     ret = (cp->backend->emit_fset32)(cp->compiler, freg, value);
     return nif_return(env, ret);
 }
@@ -2016,8 +2132,8 @@ ERL_NIF_TERM nif_emit_fset64(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
 
     if (!enif_get_resource(env, argv[0], compiler_res, (void**)&cp))
 	return EXCP_BADARG_N(env, 0, "not a compiler");
-    if (!get_s32(env, argv[1], &freg))
-	return EXCP_BADARG_N(env, 2, "not an integer");
+    if (!get_reg(env, cp, argv[1], REG_F, &freg))
+	return EXCP_BADARG_N(env, 1, "bad destination");
     if (!enif_get_double(env, argv[2], &value))
 	return EXCP_BADARG_N(env, 3, "not a float");
     ret = (cp->backend->emit_fset64)(cp->compiler, freg, value);
@@ -2419,8 +2535,31 @@ ERL_NIF_TERM nif_emit_return(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
 	return EXCP_BADARG_N(env, 0, "not a compiler");
     if (!get_s32(env, argv[1], &op))
 	return EXCP_BADARG_N(env, 1, "not an integer");
-    if (!get_arg(env, cp, argv[2], REG_R, &src, &srcw))
-	return EXCP_BADARG_N(env, 2, "bad source");    
+    switch(op) {
+    case SLJIT_MOV:
+    case SLJIT_MOV_U8:
+    case SLJIT_MOV32_U8:
+    case SLJIT_MOV_S8:
+    case SLJIT_MOV32_S8:
+    case SLJIT_MOV_U16:
+    case SLJIT_MOV32_U16:
+    case SLJIT_MOV_S16:
+    case SLJIT_MOV32_S16:
+    case SLJIT_MOV_U32:
+    case SLJIT_MOV_S32:
+    case SLJIT_MOV32:
+    case SLJIT_MOV_P:
+	if (!get_arg(env, cp, argv[2], REG_R, &src, &srcw))
+	    return EXCP_BADARG_N(env, 2, "bad source");
+	break;
+    case SLJIT_MOV_F64:
+    case SLJIT_MOV_F32:
+	if (!get_arg(env, cp, argv[2], REG_F, &src, &srcw))
+	    return EXCP_BADARG_N(env, 2, "bad source");
+	break;
+    default:
+	return EXCP_BADARG_N(env, 1, "bad return op");
+    }
     ret = (cp->backend->emit_return)(cp->compiler, op, src, srcw);
     return nif_return(env, ret);
 }

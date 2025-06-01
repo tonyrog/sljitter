@@ -63,3 +63,14 @@ loop(Backend) ->
 	sljit_asm:load(Backend, filename:join([Dir,"examples","loop.asm"])),
     55 = sljit:call({test,loop}, 10),
     ok.
+
+
+%% test add of erlang small nums return small num
+eadd() ->
+    eadd(emulator).
+eadd(Backend) ->
+    Dir = code:lib_dir(sljitter),
+    {[{erlang,add,_}],_Code} = 
+	sljit_asm:load(Backend, filename:join([Dir,"examples","eadd.asm"])),
+    55 = sljit:call({erlang,add}, 20, 35),
+    ok.

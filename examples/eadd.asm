@@ -1,22 +1,24 @@
-%% -*- erlang -*.
+%% -*- erlang -*-
 {module, erlang}.
 
 {function, add}.
-{enter, [], word, [term, term], [{reg,1}], [], 0}.
+{enter, [], term, [term, term], [{reg,1}], [{reg,3}], 0}.
 
 %% when is_small(r0)
-{'and', r2, r0, 16#f}.
-{jump, [{not_equal, r2, 16#f}], badarg}.
+{'and', s2, s0, 16#f}.
+{jump, [{not_equal, s2, 16#f}], badarg}.
 
 %% when is_small(r1)
-{'and', r2, r1, 16#f}.
-{jump, [{not_equal, r2, 16#f}], badarg}.
+{'and', s2, s1, 16#f}.
+{jump, [{not_equal, s2, 16#f}], badarg}.
 
 %% arithmetically remove tag from r0 and r1
-{'ashr', r0, r0, 4}.
-{'ashr', r1, r1, 4}.
+{'ashr', s0, s0, 4}.
+{'ashr', s1, s1, 4}.
 %% add r1 to r0 and return
-{'add', r0, r0, r1}.
+{add, s0, s0, s1}.
+{'shl', s0, s0, 4}.
+{'or', r0, s0, 16#f}.
 {return, mov, r0}.
 
 {label, badarg}.

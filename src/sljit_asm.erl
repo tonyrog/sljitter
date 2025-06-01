@@ -38,6 +38,16 @@
 -include("../include/sljit.hrl").
 -include("../include/sljit_asm.hrl").
 
+-define(compare_integer_type(X),
+	((X) >= ?SLJIT_EQUAL) 
+	andalso
+	  ((X) =< ?SLJIT_SIG_LESS_EQUAL)).
+
+-define(compare_float_type(X),
+	((X) >= ?SLJIT_F_EQUAL) 
+	andalso
+	  ((X) =< ?SLJIT_F_LESS_EQUAL)).
+
 %% -define(dbg(Fmt, Args), io:format(Fmt, Args)).
 -define(dbg(Fmt, Args), ok).
 
@@ -752,59 +762,59 @@ ins_op1(Compile, {Ins, D, S}, St) ->
 -undef(OP_SHIFT_INTO_NAME).
 -define(OP_SHIFT_INTO_NAME(I, N), I -> (N); ).
 
-ins_op2(Compile, {Ins, S1, S2}, St) ->
-    ins_op2(Compile, {Ins, [], S1, S2}, St);
+ins_op2(Compile, {Op, S1, S2}, St) ->
+    ins_op2(Compile, {Op, [], S1, S2}, St);
 
-ins_op2(Compile, {Ins, Fs, S1, S2}, St) when is_list(Fs) ->
-    Op = case Ins of
+ins_op2(Compile, {Op, Fs, S1, S2}, St) when is_list(Fs) ->
+    OpC = case Op of
 	     ?OP2_LIST
-	     _ -> throw({error, {unknown_op2, Ins}})
+	     _ -> throw({error, {unknown_op2, Op}})
 	 end,
     OpF = ins_set_flags(Fs),
     Src1 = src(S1),
     Src2 = src(S2),
-    ok = emit(Compile, op2u, [Op bor OpF, Src1, Src2]),
+    ok = emit(Compile, op2u, [OpC bor OpF, Src1, Src2]),
     St;
-ins_op2(Compile, {Ins, D, S1, S2}, St) ->
-    ins_op2(Compile, {Ins, [], D, S1, S2}, St);
-ins_op2(Compile, {Ins, Fs, D, S1, S2}, St) when is_list(Fs) ->
-    Op = case Ins of
-	     ?OP2_LIST
-	     ?OP2R_LIST
-	     _ -> throw({error, {unknown_op2, Ins}})
-	 end,
+ins_op2(Compile, {Op, D, S1, S2}, St) ->
+    ins_op2(Compile, {Op, [], D, S1, S2}, St);
+ins_op2(Compile, {Op, Fs, D, S1, S2}, St) when is_list(Fs) ->
+    OpC = case Op of
+	      ?OP2_LIST
+	      ?OP2R_LIST
+	      _ -> throw({error, {unknown_op2, Op}})
+	  end,
     OpF = ins_set_flags(Fs),
     Src1 = src(S1),
     Src2 = src(S2),
     Dst = dst(D),
-    OPR = case Ins of 
+    OPR = case Op of 
 	      ?OP2R_LIST
 	      _ -> false
 	  end,
     if OPR =:= false ->
 	    ok = emit(Compile, op2,
-		      [Op bor OpF, Dst, Src1, Src2]);
+		      [OpC bor OpF, Dst, Src1, Src2]);
        true ->
 	    ok = emit(Compile, op2r,
-		      [Op bor OpF, Dst, Src1, Src2])
+		      [OpC bor OpF, Dst, Src1, Src2])
     end,
     St;
-ins_op2(Compile, {Ins, D, S1, S2, S3}, St) ->
-    ins_op2(Compile, {Ins, [], D, S1, S2, S3}, St);
-ins_op2(Compile, {Ins, Fs, D, S1, S2, S3}, St) ->
-    Op = case Ins of
-	     ?OP_SHIFT_INTO_LIST
-	     _ -> throw({error, {unknown_shift_into_op, Ins}})
+ins_op2(Compile, {Op, D, S1, S2, S3}, St) ->
+    ins_op2(Compile, {Op, [], D, S1, S2, S3}, St);
+ins_op2(Compile, {Op, Fs, D, S1, S2, S3}, St) ->
+    OpC = case Op of
+	      ?OP_SHIFT_INTO_LIST
+	      _ -> throw({error, {unknown_shift_into_op, Op}})
 	 end,
-    Op1 = case Fs of
-	      [] -> Op;
-	      [nz] ->  Op bor ?SLJIT_SHIFT_INTO_NON_ZERO
-	  end,
+    OpC1 = case Fs of
+	       [] -> OpC;
+	       [nz] ->  OpC bor ?SLJIT_SHIFT_INTO_NON_ZERO
+	   end,
     Dst = reg(D),
     Src1 = reg(S1),
     Src2 = reg(S2),
     Src3 = src(S3),
-    ok = emit(Compile, shift_into, [Op1, Dst, Src1, Src2, Src3]),
+    ok = emit(Compile, shift_into, [OpC1, Dst, Src1, Src2, Src3]),
     St.
 
 -undef(FOP1_NAME).
@@ -834,6 +844,12 @@ ins_fop2(Compile, {Ins, Fs, D, S1, S2}, St) ->
     Op1 = case Fs of
 	      [copysign_f64] -> Op bor ?SLJIT_COPYSIGN_F64;
 	      [copysign_f32] -> Op bor ?SLJIT_COPYSIGN_F32;
+	      [f_equal] -> Op bor ?SLJIT_SET_F_EQUAL;
+	      [f_not_equal] -> Op bor ?SLJIT_SET_F_NOT_EQUAL;
+	      [f_less] -> Op bor ?SLJIT_SET_F_LESS;
+	      [f_greater_equal] -> Op bor ?SLJIT_SET_F_GREATER_EQUAL;
+	      [f_greater] -> Op bor ?SLJIT_SET_F_GREATER;
+	      [f_less_equal] -> Op bor ?SLJIT_SET_F_LESS_EQUAL;
 	      [] -> Op
 	  end,
     Src1 = fsrc(S1),
@@ -852,8 +868,25 @@ ins_fop2(Compile, {Ins, Fs, D, S1, S2}, St) ->
 	    St
     end.
 
-ins_set_flags([]) -> 0;
-ins_set_flags([F|Fs]) ->
+
+ins_set_flags(Fs) ->
+    ins_set_flags_(Fs,0,0).
+
+ins_set_flags_([],Z,Var) ->
+    Z bor Var;
+ins_set_flags_([F|Fs],Z,Var) ->
+    Set = set_flag(F),
+    if Set =:= ?SLJIT_SET_Z ->
+	    ins_set_flags_(Fs,Set,Var);
+       Var =:= Set ->
+	    ins_set_flags_(Fs,Z,Var);
+       Var =:= 0 ->
+	    ins_set_flags_(Fs,Z,Set);
+       true ->
+	    throw({error, {only_one_var_flag, F}})
+    end.
+
+set_flag(F) ->
     case F of
 	less -> ?SLJIT_SET_LESS;
 	greater_equal -> ?SLJIT_SET_GREATER_EQUAL;
@@ -863,12 +896,23 @@ ins_set_flags([F|Fs]) ->
 	sig_greater_equal -> ?SLJIT_SET_SIG_GREATER_EQUAL;
 	sig_greater -> ?SLJIT_SET_SIG_GREATER;
 	sig_less_equal -> ?SLJIT_SET_SIG_LESS_EQUAL;
+	equal -> ?SLJIT_SET_Z;
+	not_equal -> ?SLJIT_SET_Z;
+	zero -> ?SLJIT_SET_Z;
+	z -> ?SLJIT_SET_Z;
 	carry -> ?SLJIT_SET_CARRY;
 	overflow -> ?SLJIT_SET_OVERFLOW;
-	z -> ?SLJIT_SET_Z;
-	_ when is_integer(F) -> F
-    end bor ins_set_flags(Fs).
+	%% float
+	f_equal -> ?SLJIT_SET_F_EQUAL;
+	f_not_equal -> ?SLJIT_SET_F_NOT_EQUAL;
+	f_less -> ?SLJIT_SET_F_LESS;
+	f_greater_equal -> ?SLJIT_SET_F_GREATER_EQUAL;
+	f_greater -> ?SLJIT_SET_F_GREATER;
+	f_less_equal -> ?SLJIT_SET_F_LESS_EQUAL;
 	
+	_ when is_integer(F) -> F
+    end.
+
 -spec cmp(sljit:compiler(), {cmp, Test::atom(), S1::imm()|reg(), S2::imm()|reg()}, St::map()) -> sljit:jump().
 cmp(Compile, {cmp, Test, S1, S2}, _St) ->
     Type = enc_cmp(Test),
@@ -890,6 +934,13 @@ enc_cmp(Test) ->
 	sig_greater_equal -> ?SLJIT_SIG_GREATER_EQUAL;
 	sig_greater -> ?SLJIT_SIG_GREATER;
 	sig_less_equal -> ?SLJIT_SIG_LESS_EQUAL;
+	%% float
+	f_equal -> ?SLJIT_F_EQUAL;
+	f_not_equal -> ?SLJIT_F_NOT_EQUAL;
+	f_less -> ?SLJIT_F_LESS;
+	f_greater_equal -> ?SLJIT_F_GREATER_EQUAL;
+	f_greater -> ?SLJIT_F_GREATER;
+	f_less_equal -> ?SLJIT_F_LESS_EQUAL;
 	_ when is_integer(Test) -> Test
     end.
 
@@ -907,6 +958,13 @@ dec_cmp(Test) ->
 	?SLJIT_SIG_GREATER_EQUAL -> sig_greater_equal;
 	?SLJIT_SIG_GREATER -> sig_greater;
 	?SLJIT_SIG_LESS_EQUAL -> sig_less_equal;
+	%% float
+	?SLJIT_F_EQUAL -> f_equal;
+	?SLJIT_F_NOT_EQUAL -> f_not_equal;
+	?SLJIT_F_LESS -> f_less;
+	?SLJIT_F_GREATER_EQUAL -> f_greater_equal;
+	?SLJIT_F_GREATER -> f_greater;
+	?SLJIT_F_LESS_EQUAL -> f_less_equal;
 	_  -> Test
     end.
 
@@ -925,6 +983,13 @@ enc_status(Test) ->
 	sig_greater_equal -> ?SLJIT_SIG_GREATER_EQUAL;
 	sig_greater -> ?SLJIT_SIG_GREATER;
 	sig_less_equal -> ?SLJIT_SIG_LESS_EQUAL;
+	%% float
+	f_equal -> ?SLJIT_F_EQUAL;
+	f_not_equal -> ?SLJIT_F_NOT_EQUAL;
+	f_less -> ?SLJIT_F_LESS;
+	f_greater_equal -> ?SLJIT_F_GREATER_EQUAL;
+	f_greater -> ?SLJIT_F_GREATER;
+	f_less_equal -> ?SLJIT_F_LESS_EQUAL;
 	%% flags
 	overflow -> ?SLJIT_OVERFLOW;
 	not_overflow -> ?SLJIT_NOT_OVERFLOW;
@@ -1026,7 +1091,6 @@ ins_jump(Compile, {jump, L0}, St) ->
 ins_jump(Compile, {jump, Options, L0},St) when is_list(Options) ->
     make_jump(Compile, Options, L0, St).
 
-
 make_jump(Compile,Options,LabelName,St) ->
     ok = emit(Compile, label_name, [LabelName]),
     Jump = make_jump_(Compile, Options, undefined, ?SLJIT_JUMP),
@@ -1035,8 +1099,13 @@ make_jump(Compile,Options,LabelName,St) ->
 %% process jump options
 make_jump_(Compile, [], JSrc, {T, Src1, Src2}) ->
     set_jump_name(Compile, JSrc),
-    Jump = emit(Compile, cmp, [dynamic_jump(JSrc, T),Src1,Src2]),
-    set_jump_src(Compile,JSrc,Jump);
+    if ?compare_float_type(T) ->
+	    Jump = emit(Compile, fcmp, [dynamic_jump(JSrc, T),Src1,Src2]),
+	    set_jump_src(Compile,JSrc,Jump);
+       true ->
+	    Jump = emit(Compile, cmp, [dynamic_jump(JSrc, T),Src1,Src2]),
+	    set_jump_src(Compile,JSrc,Jump)
+    end;
 make_jump_(Compile, [], JSrc, T) when is_integer(T) ->
     set_jump_name(Compile, JSrc),
     Jump = emit(Compile, jump, [dynamic_jump(JSrc, T)]),
@@ -1047,8 +1116,12 @@ make_jump_(Compile, [Option|Options], JSrc, Condition) ->
 	{from, JSrc1} when is_atom(JSrc1) ->
 	    make_jump_(Compile, Options, JSrc1, Condition);
 	{Test, S1, S2} ->
-	    T = enc_cmp(Test),
-	    make_jump_(Compile, Options, JSrc, {T,src(S1),src(S2)});
+	    T = enc_cmp(Test), 
+	    if ?compare_float_type(T) ->
+		    make_jump_(Compile, Options, JSrc, {T,fsrc(S1),fsrc(S2)});
+	       true ->
+		    make_jump_(Compile, Options, JSrc, {T,src(S1),src(S2)})
+	    end;
 	Test when is_atom(Test); is_integer(Test)  ->
 	    T = enc_status(Test),
 	    make_jump_(Compile, Options, JSrc, T)
@@ -1314,6 +1387,7 @@ emit_func(jump) -> emit_jump;
 emit_func(constant) -> constant;
 emit_func(ijump) -> emit_ijump;
 emit_func(cmp) -> emit_cmp;
+emit_func(fcmp) -> emit_fcmp;
 emit_func(enter) -> emit_enter;
 emit_func(call) -> emit_call;
 emit_func(icall) -> emit_icall;
