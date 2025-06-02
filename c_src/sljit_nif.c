@@ -15,8 +15,8 @@
 
 #include "sljitter_backend.h"
 
-#define NIF_TRACE
-#define DEBUG
+// #define NIF_TRACE
+// #define DEBUG
 
 #define UNUSED(a) ((void) a)
 
@@ -1530,7 +1530,7 @@ ERL_NIF_TERM copy_term_to_mem(ErlNifEnv* env, nif_ctx_t* ctx,
 {
     ERL_NIF_TERM term1;    
     ERL_NIF_TERM copy;
-    ERL_NIF_TERM* term_ptr;
+    // ERL_NIF_TERM* term_ptr;
     ERL_NIF_TERM* term1_ptr;    
     ERL_NIF_TERM* float_ptr;
     const ERL_NIF_TERM* elems;
@@ -1549,9 +1549,9 @@ ERL_NIF_TERM copy_term_to_mem(ErlNifEnv* env, nif_ctx_t* ctx,
 
     term1_ptr = ptr_val(term1);
     float_ptr  = ptr_val(elems[0]);
-    term_ptr = ptr_val(elems[1]);
+    // term_ptr = ptr_val(elems[1]);
 
-    DBG("term_ptr=%p\r\n", term_ptr);
+    DBG("term_ptr=%p\r\n", ptr_val(elems[1]));
     DBG("float_ptr=%p\r\n", float_ptr);
 
     size = (float_ptr - term1_ptr);
