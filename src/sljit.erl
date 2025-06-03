@@ -10,10 +10,9 @@
 -on_load(init/0).
 -export([get_platform_name/0]).
 -export([get_platform_info/0]).
--export([cpu_features/0]).
--export([cpu_feature/1]).
--export([has_cpu_feature/1]).
--export([has_cpu_feature/2]).
+-export([cpu_features/0, cpu_features/1]).
+-export([cpu_feature/1, cpu_feature/2]).
+-export([has_cpu_feature/1, has_cpu_feature/2]).
 -export([create_compiler/0]).
 -export([create_compiler/1]).
 -export([generate_code/1]).
@@ -205,8 +204,8 @@ feature_map() ->
 
 -spec has_cpu_feature(Feature::integer()) ->
 	  boolean().
-has_cpu_feature(_Feature) ->
-    ?nif_stub().
+has_cpu_feature(Feature) ->
+    has_cpu_feature(native, Feature).
 
 -spec has_cpu_feature(Arch::arch(), Feature::integer()) ->
 	  boolean().
@@ -214,11 +213,18 @@ has_cpu_feature(_Arch, _Feature) ->
     ?nif_stub().
 
 cpu_features() ->
-    [ {Name, has_cpu_feature(Flag)} || {Name,Flag} <- maps:to_list(feature_map()) ].
+    cpu_features(native).
+
+cpu_features(Arch) ->
+    [ {Name, has_cpu_feature(Arch, Flag)} ||
+	{Name,Flag} <- maps:to_list(feature_map()) ].
+
 
 cpu_feature(Name) when is_atom(Name) ->
+    cpu_feature(native, Name).
+cpu_feature(Arch,Name) when is_atom(Arch), is_atom(Name) ->
     case maps:find(Name, feature_map()) of
-	{ok, F} -> has_cpu_feature(F);
+	{ok, F} -> has_cpu_feature(Arch, F);
 	error -> exit(no_such_feature)
     end.
 

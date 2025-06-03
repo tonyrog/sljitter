@@ -434,11 +434,12 @@ disasm_ins(Slo, St) ->
 	    {{return,OpName,Src}, St};
 	{simd_op2,[Op, Dst, Src1, Src2]} ->
 	    OpName = 
-		case Op of
+		case Op band 16#ff of
 		    ?SIMD_OP2_LIST
 		    _ -> throw({error, {unknown_simd_op2, Op}})
 		end,
-	    {{OpName,Dst,Src1,Src2},St};
+	    Flags = decode_simd_op2_flags(Op),
+	    {{OpName,Flags,Dst,Src1,Src2},St};
 	{const, [Op, Dst, InitValue]} ->
 	    Name = maps:get(const_name, St),
 	    St1 = maps:remove(const_name, St),
@@ -1298,39 +1299,86 @@ ins_simd_op2(Compile, {Ins, Fs, D, S1, S2}, St) when is_list(Fs) ->
 	     ?SIMD_OP2_LIST
 	     _ -> throw({error, {unknown_simd_op2, Ins}})
 	 end,
-    OpF = ins_set_vflags(Fs),
+    OpF = encode_simd_op2_flags(Fs),
     Dst = vreg(D),
     Src1 = vreg(S1),
     Src2 = vsrc(S2),
-    ok = emit(Compile, simd_op2, 
-	      [Op bor OpF, Dst, Src1, Src2]),
+    ok = emit(Compile, simd_op2, [Op bor OpF, Dst, Src1, Src2]),
     St.
 
 
-ins_set_vflags([]) -> 0;
-ins_set_vflags([F|Fs]) ->
-    case F of
-	float -> ?SLJIT_SIMD_FLOAT;
-	test -> ?SLJIT_SIMD_TEST;
-	reg_64 -> ?SLJIT_SIMD_REG_64;
-	reg_128 -> ?SLJIT_SIMD_REG_128;
-	reg_256 -> ?SLJIT_SIMD_REG_256;
-	reg_512 -> ?SLJIT_SIMD_REG_512;
-	u8 -> ?SLJIT_SIMD_ELEM_8;
-	u16 -> ?SLJIT_SIMD_ELEM_16;
-	u32 -> ?SLJIT_SIMD_ELEM_32;
-	u64 -> ?SLJIT_SIMD_ELEM_64;
-	u128 -> ?SLJIT_SIMD_ELEM_128;
-	u256 -> ?SLJIT_SIMD_ELEM_256;
-	unaligned -> ?SLJIT_SIMD_MEM_UNALIGNED;
-	aligned_16 -> ?SLJIT_SIMD_MEM_ALIGNED_16;
-	aligned_32 -> ?SLJIT_SIMD_MEM_ALIGNED_32;
-	aligned_64 -> ?SLJIT_SIMD_MEM_ALIGNED_64;
-	aligned_128 -> ?SLJIT_SIMD_MEM_ALIGNED_128;
-	aligned_256 -> ?SLJIT_SIMD_MEM_ALIGNED_256;
-	aligned_512 -> ?SLJIT_SIMD_MEM_ALIGNED_512;
-	_ when is_integer(F) -> F
-    end bor ins_set_vflags(Fs).
+encode_simd_op2_flags(Fs) ->
+    vflags(Fs, 0,
+	   ?SLJIT_SIMD_REG_128,
+	   ?SLJIT_SIMD_ELEM_8,
+	   ?SLJIT_SIMD_MEM_UNALIGNED).
+
+vflags([],F,R,E,M) ->
+    F bor R bor E bor M;
+vflags([Flag|Fs],F,R,E,M) ->
+    case Flag of
+	float -> vflags(Fs, F bor ?SLJIT_SIMD_FLOAT, R, E, M);
+	test -> vflags(Fs, F bor ?SLJIT_SIMD_TEST, R, E, M);
+
+	reg_64 -> vflags(Fs, F, ?SLJIT_SIMD_REG_64, E, M);
+	reg_128 -> vflags(Fs, F, ?SLJIT_SIMD_REG_128, E, M);
+	reg_256 -> vflags(Fs, F, ?SLJIT_SIMD_REG_256, E, M);
+	reg_512 -> vflags(Fs, F, ?SLJIT_SIMD_REG_512, E, M);
+
+	elem_8 -> vflags(Fs, F, R, ?SLJIT_SIMD_ELEM_8, M);
+	elem_16 -> vflags(Fs, F, R, ?SLJIT_SIMD_ELEM_16, M);
+	elem_32 -> vflags(Fs, F, R, ?SLJIT_SIMD_ELEM_32, M);
+	elem_64 -> vflags(Fs, F, R, ?SLJIT_SIMD_ELEM_64, M);
+	elem_128 -> vflags(Fs, F, R, ?SLJIT_SIMD_ELEM_128, M);
+	elem_256 -> vflags(Fs, F, R, ?SLJIT_SIMD_ELEM_256, M);
+
+	unaligned -> vflags(Fs, F, R, E, ?SLJIT_SIMD_MEM_UNALIGNED);
+	aligned_16 -> vflags(Fs, F, R, E, ?SLJIT_SIMD_MEM_ALIGNED_16);
+	aligned_32 -> vflags(Fs, F, R, E, ?SLJIT_SIMD_MEM_ALIGNED_32);
+	aligned_64 -> vflags(Fs, F, R, E, ?SLJIT_SIMD_MEM_ALIGNED_64);
+	aligned_128 -> vflags(Fs, F, R, E, ?SLJIT_SIMD_MEM_ALIGNED_128);
+	aligned_256 -> vflags(Fs, F, R, E, ?SLJIT_SIMD_MEM_ALIGNED_256);
+	aligned_512 -> vflags(Fs, F, R, E, ?SLJIT_SIMD_MEM_ALIGNED_512)
+    end.
+
+%% <<Mem:6, Elem:6, Reg:6, Type:12>>
+decode_simd_op2_flags(Flags) ->
+    Reg  = 
+	case Flags band (16#3f  bsl 12) of
+	    ?SLJIT_SIMD_REG_64 -> reg_64;
+	    ?SLJIT_SIMD_REG_128 -> reg_128;
+	    ?SLJIT_SIMD_REG_256 -> reg_256;
+	    ?SLJIT_SIMD_REG_512 -> reg_512
+	end,
+    Elem = case Flags band (16#3f  bsl 18) of
+	       ?SLJIT_SIMD_ELEM_8 -> elem_8;
+	       ?SLJIT_SIMD_ELEM_16 -> elem_16;
+	       ?SLJIT_SIMD_ELEM_32 -> elem_32;
+	       ?SLJIT_SIMD_ELEM_64 -> elem_64;
+	       ?SLJIT_SIMD_ELEM_128 -> elem_128;
+	       ?SLJIT_SIMD_ELEM_256 -> elem_256
+	   end,
+    Mem  = case Flags band (16#3f  bsl 24) of
+	       ?SLJIT_SIMD_MEM_UNALIGNED -> unaligned;
+	       ?SLJIT_SIMD_MEM_ALIGNED_16 -> aligned_16;
+	       ?SLJIT_SIMD_MEM_ALIGNED_32 -> aligned_32;
+	       ?SLJIT_SIMD_MEM_ALIGNED_64 -> aligned_64;
+	       ?SLJIT_SIMD_MEM_ALIGNED_128 -> aligned_128;
+	       ?SLJIT_SIMD_MEM_ALIGNED_256 -> aligned_256;
+	       ?SLJIT_SIMD_MEM_ALIGNED_512 -> aligned_512
+	   end,
+    if Flags band ?SLJIT_SIMD_FLOAT =/= 0 ->
+	    [float];
+       true ->
+	    []
+    end ++
+    if Flags band ?SLJIT_SIMD_TEST =/= 0 ->
+	    [test];
+       true ->
+	    []
+    end ++ [Reg,Elem,Mem].
+    
+
 
 ins_fset32(Compile, {fset32, Reg, Value}, St) ->
     ok = emit(Compile, fset32, [freg(Reg), Value]),
@@ -1455,6 +1503,7 @@ fmt(Ins) ->
 	?FOP1_LIST
 	?FOP2_LIST
 	?OP_FCOPY_LIST
+	?SIMD_OP2_LIST
 	%% ?OP_SHIFT_INTO_LIST - handled by op2
 	label -> label;
 	jump -> jump;

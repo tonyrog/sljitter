@@ -32,7 +32,7 @@
     atm_##name = enif_make_atom((env),string)
 
 #define NIF_LIST \
-    NIF("has_cpu_feature", 1, nif_has_cpu_feature) \
+    NIF("has_cpu_feature", 2, nif_has_cpu_feature) \
     NIF("create_compiler",   0, nif_create_compiler) \
     NIF("create_compiler",   1, nif_create_compiler) \
     NIF("module",     2, nif_module) \
@@ -895,23 +895,15 @@ ERL_NIF_TERM nif_has_cpu_feature(ErlNifEnv* env, int argc,
 {
     UNUSED(argc);
     UNUSED(argv);
-    ERL_NIF_TERM name;    
     sljit_s32 feature_type;
     sljitter_backend_t* bep;
     
-    if (argc == 0)
-	name = native_backend_name();
-    else {
-	if (!enif_is_atom(env, argv[1]))
-	    return EXCP_BADARG_N(env, 1, "not a architecture name");
-	name = argv[1];
-    }
-    if ((bep = select_backend(name)) == NULL)
+    if (!enif_is_atom(env, argv[0]))
+	return EXCP_BADARG_N(env, 1, "not a architecture name");
+    if (!get_s32(env, argv[1], &feature_type))
+	return EXCP_BADARG_N(env, 1, "not an integer");
+    if ((bep = select_backend(argv[0])) == NULL)
 	return EXCP_BADARG_N(env, 0, "architecture not supported");
-
-    if (!get_s32(env, argv[0], &feature_type))
-	return EXCP_BADARG_N(env, 0, "not an integer");    
-    
     return make_bool(env, (bep->has_cpu_feature)(feature_type));
 }
 

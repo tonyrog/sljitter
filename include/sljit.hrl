@@ -236,8 +236,12 @@
 -define(SLJIT_MEM_PRE,		16#000000).
 -define(SLJIT_MEM_POST,		16#000400).
 -define(SLJIT_MEM_SUPP,		16#000800).
+
 -define(SLJIT_SIMD_LOAD,	16#000000).
 -define(SLJIT_SIMD_STORE,	16#000001).
+
+%% simd_op2 ...
+
 -define(SLJIT_SIMD_FLOAT,	16#000400).
 -define(SLJIT_SIMD_TEST,	16#000800).
 
@@ -245,6 +249,7 @@
 -define(SLJIT_SIMD_REG_128,	(4 bsl 12)).
 -define(SLJIT_SIMD_REG_256,	(5 bsl 12)).
 -define(SLJIT_SIMD_REG_512,	(6 bsl 12)).
+
 -define(SLJIT_SIMD_ELEM_8,	(0 bsl 18)).
 -define(SLJIT_SIMD_ELEM_16,	(1 bsl 18)).
 -define(SLJIT_SIMD_ELEM_32,	(2 bsl 18)).
@@ -252,6 +257,7 @@
 -define(SLJIT_SIMD_ELEM_128,	(4 bsl 18)).
 -define(SLJIT_SIMD_ELEM_256,	(5 bsl 18)).
 
+%% simd_mov & simd_op2
 -define(SLJIT_SIMD_MEM_UNALIGNED,	(0 bsl 24)).
 -define(SLJIT_SIMD_MEM_ALIGNED_16,	(1 bsl 24)).
 -define(SLJIT_SIMD_MEM_ALIGNED_32,	(2 bsl 24)).
@@ -259,8 +265,12 @@
 -define(SLJIT_SIMD_MEM_ALIGNED_128,	(4 bsl 24)).
 -define(SLJIT_SIMD_MEM_ALIGNED_256,	(5 bsl 24)).
 -define(SLJIT_SIMD_MEM_ALIGNED_512,	(6 bsl 24)).
+
+%% emit_simd_lane_mov()
 -define(SLJIT_SIMD_LANE_ZERO,		16#000002).
 -define(SLJIT_SIMD_LANE_SIGNED,		16#000004).
+
+%% emit_simd_load_extend()
 -define(SLJIT_SIMD_EXTEND_SIGNED,	16#000002).
 -define(SLJIT_SIMD_EXTEND_16,		(1 bsl 24)).
 -define(SLJIT_SIMD_EXTEND_32,		(2 bsl 24)).
@@ -270,6 +280,7 @@
 -define(SLJIT_SIMD_OP2_OR,	16#000002).
 -define(SLJIT_SIMD_OP2_XOR,	16#000003).
 -define(SLJIT_SIMD_OP2_SHUFFLE,	16#000004).
+
 -define(SLJIT_ATOMIC_TEST,      16#10000).
 -define(SLJIT_ATOMIC_USE_CAS,   16#20000).
 -define(SLJIT_ATOMIC_USE_LS,    16#40000).
