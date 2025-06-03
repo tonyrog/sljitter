@@ -30,6 +30,7 @@
 
 -type vsrc() :: sljit:vsrc().
 -type vdst() :: sljit:vdst().
+-type vsrcdst() :: sljit:vsrcdst().
 
 
 %% debug
@@ -97,8 +98,10 @@
 
 -type simd_op2() :: vand | vor | vxor | shuffle.
 
+-type simd_mov() :: vload | vstore.
+
 -export_type([op0/0, op1/0, op2/0, op2r/0, op_shift_into/0, op_src/0, op_dst/0]).
--export_type([fop1/0, fop2/0, fop2r/0, op_fcopy/0, simd_op2/0]).
+-export_type([fop1/0, fop2/0, fop2r/0, op_fcopy/0, simd_op2/0, simd_mov/0]).
 
 -define(test_flag(F, X), ((X) band (F)) =:= (F)).
 
@@ -278,6 +281,9 @@ print_object(Ins, Fd) ->
 -undef(SIMD_OP2_NAME).
 -define(SIMD_OP2_NAME(I, N), N -> I; ).
 
+-undef(SIMD_MOV_NAME).
+-define(SIMD_MOV_NAME(I, N), N -> I; ).
+
 disasm_ins(Slo, St) ->
     case Slo of
 	{label_name,[Name]} ->
@@ -440,6 +446,14 @@ disasm_ins(Slo, St) ->
 		end,
 	    Flags = decode_simd_op2_flags(Op),
 	    {{OpName,Flags,Dst,Src1,Src2},St};
+	{simd_mov,[Op, VReg, SrcDst]} ->
+	    OpName = 
+		case Op band 16#ff of
+		    ?SIMD_MOV_LIST
+		    _ -> throw({error, {unknown_simd_mov, Op}})
+		end,
+	    Flags = decode_simd_mov_flags(Op),
+	    {{OpName,Flags,VReg,SrcDst},St};
 	{const, [Op, Dst, InitValue]} ->
 	    Name = maps:get(const_name, St),
 	    St1 = maps:remove(const_name, St),
@@ -627,6 +641,9 @@ slo_ins(Compile, Ins, St) ->
 	{simd_op2,[Op,Dst,Src1,Src2]} ->
 	    ok = sljit:emit_simd_op2(Compile,Op,Dst,Src1,Src2),
 	    St;
+	{simd_mov,[Op,VReg,SrcDst]} ->
+	    ok = sljit:emit_simd_mov(Compile,Op,VReg,SrcDst),
+	    St;
 	{const_name, [Name]} ->  %% synthetic
 	    St#{const_name => Name};
 	{const, [Op,Dst,InitValue]} -> 
@@ -698,6 +715,7 @@ asm_ins(Compile, Instruction, St) ->
 	set_context -> ins_enter(Compile, Instruction, St);
 	return -> ins_return(Compile, Instruction, St);
 	simd_op2 -> ins_simd_op2(Compile, Instruction, St);
+	simd_mov -> ins_simd_mov(Compile, Instruction, St);
 	const -> ins_const(Compile, Instruction, St);
 	op_addr -> ins_op_addr(Compile,  Instruction, St);
 	Fmt -> throw({error, {unknown_format, Fmt}})
@@ -1342,6 +1360,8 @@ vflags([Flag|Fs],F,R,E,M) ->
     end.
 
 %% <<Mem:6, Elem:6, Reg:6, Type:12>>
+decode_simd_mov_flags(Flags) ->
+    decode_simd_op2_flags(Flags).
 decode_simd_op2_flags(Flags) ->
     Reg  = 
 	case Flags band (16#3f  bsl 12) of
@@ -1377,7 +1397,22 @@ decode_simd_op2_flags(Flags) ->
        true ->
 	    []
     end ++ [Reg,Elem,Mem].
-    
+
+-undef(SIMD_MOV_NAME).
+-define(SIMD_MOV_NAME(I, N), I -> N; ).
+
+ins_simd_mov(Compile, {Ins, VReg, SrcDst}, St) ->
+    ins_simd_mov(Compile, {Ins, [], VReg, SrcDst}, St);
+ins_simd_mov(Compile, {Ins, Fs, VReg, SrcDst}, St) when is_list(Fs) ->
+    Op = case Ins of
+	     ?SIMD_MOV_LIST
+	     _ -> throw({error, {unknown_simd_op2, Ins}})
+	 end,
+    OpF = encode_simd_op2_flags(Fs),
+    Reg = vreg(VReg),
+    Src = src(SrcDst),
+    ok = emit(Compile, simd_mov, [Op bor OpF, Reg, Src]),
+    St.
 
 
 ins_fset32(Compile, {fset32, Reg, Value}, St) ->
@@ -1445,6 +1480,7 @@ emit_func(set_context) -> set_context;
 emit_func(return_void) -> emit_return_void;
 emit_func(return) -> emit_return;
 emit_func(simd_op2) -> emit_simd_op2;
+emit_func(simd_mov) -> emit_simd_mov;
 emit_func(label_name) -> label_name;
 emit_func(jump_name) -> jump_name;
 emit_func(const) -> emit_const;
@@ -1492,6 +1528,9 @@ emit_func(label_addr) -> label_addr.
 -undef(SIMD_OP2_NAME).
 -define(SIMD_OP2_NAME(I, N), I -> simd_op2; ).
 
+-undef(SIMD_MOV_NAME).
+-define(SIMD_MOV_NAME(I, N), I -> simd_mov; ).
+
 fmt(Ins) ->
     case opcode(Ins) of
 	?OP0_LIST
@@ -1504,6 +1543,7 @@ fmt(Ins) ->
 	?FOP2_LIST
 	?OP_FCOPY_LIST
 	?SIMD_OP2_LIST
+	?SIMD_MOV_LIST
 	%% ?OP_SHIFT_INTO_LIST - handled by op2
 	label -> label;
 	jump -> jump;

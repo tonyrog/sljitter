@@ -61,6 +61,7 @@
 -export([emit_return_void/1]).
 -export([emit_return_to/2]).
 -export([emit_simd_op2/5]).
+-export([emit_simd_mov/4]).
 -export([get_label_addr/1]).
 -export([emit_const/4]).
 -export([set_constant/2, set_constant/3]).
@@ -135,7 +136,7 @@
 
 %%-type vdst() :: mem() | vreg().
 -type vsrc() :: mem() | vreg().
-
+-type vsrcdst() :: mem() | reg().  %% memory location or pointer
 
 -export_type([gp_reg/0, saved_reg/0, reg/0]).
 -export_type([float_reg/0, float_saved_reg/0, freg/0]).
@@ -480,6 +481,11 @@ emit_return_to(_Compiler, _Src) ->
 -spec emit_simd_op2(compiler(), Type::integer(), 
 		    DstVReg::vreg(), Src1::vreg(), Src2::vsrc()) -> ok.
 emit_simd_op2(_Compiler, _Type, _Dst, _Src1, _Src2) -> 
+    ?nif_stub().
+
+-spec emit_simd_mov(compiler(), Type::integer(), 
+		    VReg::vreg(), SrcDst::vsrcdst()) -> ok.
+emit_simd_mov(_Compiler, _Type, _VReg, _SrcDst) -> 
     ?nif_stub().
 
 -spec get_label_addr(Label::label()) -> integer().
