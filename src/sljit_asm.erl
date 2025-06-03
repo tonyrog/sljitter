@@ -32,6 +32,8 @@
 -type vdst() :: sljit:vdst().
 -type vsrcdst() :: sljit:vsrcdst().
 
+-type context() :: #{ defines => map(), 
+		      constants => [{atom(),sljit:const()}] }.
 
 %% debug
 -compile(export_all).
@@ -105,6 +107,12 @@
 
 -define(test_flag(F, X), ((X) band (F)) =:= (F)).
 
+%% Create assemble context
+create_context(Arch, Compiler) ->
+    Info = sljit:get_platform_info(),
+    Defs = maps:get(Arch, Info), %% get initial system defs
+    #{ defines => Defs, constants => [] }.
+
 %% Assemble a file.asm into slo object binary
 -spec assemble(Filename::string()) -> {ok, binary()} | {error, term()}.
 assemble(Filename) ->
@@ -118,7 +126,8 @@ assemble(Arch, Filename) ->
 	    case file:open(<<>>, [ram, binary, write]) of
 		{ok, Fd} ->
 		    Compile = sljit:create_compiler(Arch),
-		    _Sym = asm_ins_list({fd,Fd,Compile}, Instructions, #{}),
+		    St = create_context(Arch, Compile),
+		    _Sym = asm_ins_list({fd,Fd,Compile}, Instructions, St),
 		    {ok, ObjBin} = ram_file:get_file(Fd),
 		    file:close(Fd),
 		    {ok, ObjBin};
@@ -151,7 +160,8 @@ assemble_file(Arch, Filename, DstFilename) ->
 	    case file:open(DstFilename1, WriteOpts) of
 		{ok, Fd} ->
 		    Compile = sljit:create_compiler(Arch),
-		    _Sym = asm_ins_list({fd,Fd,Compile}, Instructions, #{}),
+		    St = create_context(Arch, Compile),
+		    _Sym = asm_ins_list({fd,Fd,Compile}, Instructions, St),
 		    if Ext =:= ".bin" ->
 			    {_,Code} = sljit:generate_code(Compile),
 			    Bin = sljit:get_code(Code),
@@ -172,13 +182,14 @@ assemble_file(Arch, Filename, DstFilename) ->
 -spec assemble_list(Instuctions::[term()]) -> 
 	  {ok, binary()} | {error, term()}.
 assemble_list(Instructions) when is_list(Instructions) ->
-    assemble_list(aut, Instructions).
+    assemble_list(native, Instructions).
 
 -spec assemble_list(Arch::sljit:arch(),Instuctions::[term()]) -> 
 	  {ok, binary()} | {error, term()}.
 assemble_list(Arch,Instructions) when is_list(Instructions) ->
     Compile = sljit:create_compiler(Arch),
-    _Sym = asm_ins_list(Compile, Instructions, #{}),
+    St = create_context(Arch, Compile),
+    _Sym = asm_ins_list(Compile, Instructions, St),
     {_,Code} = sljit:generate_code(Compile),
     Bin = sljit:get_code(Code),
     {ok, Bin}.
@@ -493,7 +504,8 @@ load(Arch,Filename) ->
 	    case file:consult(Filename) of
 		{ok, InsList} ->
 		    Compile = sljit:create_compiler(Arch),
-		    _St = asm_ins_list(Compile, InsList, #{}),
+		    St = create_context(Arch, Compile),
+		    _St = asm_ins_list(Compile, InsList, St),
 		    sljit:generate_code(Compile);
 		Error ->
 		    Error
@@ -651,8 +663,8 @@ slo_ins(Compile, Ins, St) ->
 	    Const = sljit:emit_const(Compile, Op, Dst, InitValue),
 	    ok = sljit:constant(Compile, Name, Const),
 	    CList = maps:get(constants, St, []),
-	    St#{ constants => [{Name, Const} | CList], 
-		 const_name => undefined };
+	    St#{constants => [{Name, Const} | CList], 
+		const_name => undefined };
 	{op_addr, [Op, Dst]} ->
 	    Jump = sljit:emit_op_addr(Compile, Op, Dst),
 	    St1 = case maps:get(label_name, St, undefined) of
@@ -681,6 +693,13 @@ asm_ins(Compile, Instruction, St) ->
     Fmt = fmt(Instruction),
     ?dbg("ASM (fmt=~w) ~p, st=~p~n", [Fmt, Instruction,St]),
     case Fmt of
+	define ->
+	    case Instruction of
+		{define, Name, Value} when is_atom(Name) ->
+		    Defs = maps:get(defines, St),
+		    Defs1 = maps:put(Name, Value, Defs),
+		    St#{ defines => Defs1}
+	    end;
 	module ->
 	    {module, M} = Instruction,
 	    ok = emit(Compile, module, [M]),
@@ -742,7 +761,7 @@ ins_op_src(Compile, {Ins, S}, St) ->
 	     ?OP_SRC_LIST
 	     _ -> throw({error, {unknown_op_src, Ins}})
 	 end,
-    Src = src(S),
+    Src = src(S,St),
     ok = emit(Compile, op_src, [Op, Src]),
     St.
 
@@ -768,7 +787,7 @@ ins_op1(Compile, {Ins, D, S}, St) ->
 	     _ -> throw({error, {unknown_op1, Ins}})
 	 end,
     Dst = dst(D),
-    Src = src(S),
+    Src = src(S,St),
     ok = emit(Compile, op1, [Op, Dst, Src]),
     St.
 
@@ -790,8 +809,8 @@ ins_op2(Compile, {Op, Fs, S1, S2}, St) when is_list(Fs) ->
 	     _ -> throw({error, {unknown_op2, Op}})
 	 end,
     OpF = ins_set_flags(Fs),
-    Src1 = src(S1),
-    Src2 = src(S2),
+    Src1 = src(S1,St),
+    Src2 = src(S2,St),
     ok = emit(Compile, op2u, [OpC bor OpF, Src1, Src2]),
     St;
 ins_op2(Compile, {Op, D, S1, S2}, St) ->
@@ -803,8 +822,8 @@ ins_op2(Compile, {Op, Fs, D, S1, S2}, St) when is_list(Fs) ->
 	      _ -> throw({error, {unknown_op2, Op}})
 	  end,
     OpF = ins_set_flags(Fs),
-    Src1 = src(S1),
-    Src2 = src(S2),
+    Src1 = src(S1,St),
+    Src2 = src(S2,St),
     Dst = dst(D),
     OPR = case Op of 
 	      ?OP2R_LIST
@@ -832,7 +851,7 @@ ins_op2(Compile, {Op, Fs, D, S1, S2, S3}, St) ->
     Dst = reg(D),
     Src1 = reg(S1),
     Src2 = reg(S2),
-    Src3 = src(S3),
+    Src3 = src(S3,St),
     ok = emit(Compile, shift_into, [OpC1, Dst, Src1, Src2, Src3]),
     St.
 
@@ -845,7 +864,7 @@ ins_fop1(Compile, {Ins, D, S}, St) ->
 	     _ -> throw({error, {unknown_fop1, Ins}})
 	 end,
     Dst = fdst(D),
-    Src = fsrc(S),
+    Src = fsrc(S,St),
     %% fixme: emit imm float ?
     ok = emit(Compile, fop1, [Op, Dst, Src]),
     St.
@@ -871,8 +890,8 @@ ins_fop2(Compile, {Ins, Fs, D, S1, S2}, St) ->
 	      [f_less_equal] -> Op bor ?SLJIT_SET_F_LESS_EQUAL;
 	      [] -> Op
 	  end,
-    Src1 = fsrc(S1),
-    Src2 = fsrc(S2),
+    Src1 = fsrc(S1,St),
+    Src2 = fsrc(S2,St),
     Dst = fdst(D),
     case Dst of
 	{Dr={fr,_}, 0} ->
@@ -933,10 +952,10 @@ set_flag(F) ->
     end.
 
 -spec cmp(sljit:compiler(), {cmp, Test::atom(), S1::imm()|reg(), S2::imm()|reg()}, St::map()) -> sljit:jump().
-cmp(Compile, {cmp, Test, S1, S2}, _St) ->
+cmp(Compile, {cmp, Test, S1, S2}, St) ->
     Type = enc_cmp(Test),
-    Src1 = src(S1),
-    Src2 = src(S2),
+    Src1 = src(S1,St),
+    Src2 = src(S2,St),
     emit(Compile, cmp, [Type, Src1, Src2]).
 
 enc_cmp(Test) ->
@@ -1112,11 +1131,11 @@ ins_jump(Compile, {jump, Options, L0},St) when is_list(Options) ->
 
 make_jump(Compile,Options,LabelName,St) ->
     ok = emit(Compile, label_name, [LabelName]),
-    Jump = make_jump_(Compile, Options, undefined, ?SLJIT_JUMP),
+    Jump = make_jump_(Compile, Options, undefined, ?SLJIT_JUMP, St),
     add_target(LabelName, Jump, St).
 
 %% process jump options
-make_jump_(Compile, [], JSrc, {T, Src1, Src2}) ->
+make_jump_(Compile, [], JSrc, {T, Src1, Src2}, _St) ->
     set_jump_name(Compile, JSrc),
     if ?compare_float_type(T) ->
 	    Jump = emit(Compile, fcmp, [dynamic_jump(JSrc, T),Src1,Src2]),
@@ -1125,25 +1144,27 @@ make_jump_(Compile, [], JSrc, {T, Src1, Src2}) ->
 	    Jump = emit(Compile, cmp, [dynamic_jump(JSrc, T),Src1,Src2]),
 	    set_jump_src(Compile,JSrc,Jump)
     end;
-make_jump_(Compile, [], JSrc, T) when is_integer(T) ->
+make_jump_(Compile, [], JSrc, T, _St) when is_integer(T) ->
     set_jump_name(Compile, JSrc),
     Jump = emit(Compile, jump, [dynamic_jump(JSrc, T)]),
     set_jump_src(Compile,JSrc,Jump);
 
-make_jump_(Compile, [Option|Options], JSrc, Condition) ->
+make_jump_(Compile, [Option|Options], JSrc, Condition, St) ->
     case Option of
 	{from, JSrc1} when is_atom(JSrc1) ->
-	    make_jump_(Compile, Options, JSrc1, Condition);
+	    make_jump_(Compile, Options, JSrc1, Condition, St);
 	{Test, S1, S2} ->
 	    T = enc_cmp(Test), 
 	    if ?compare_float_type(T) ->
-		    make_jump_(Compile, Options, JSrc, {T,fsrc(S1),fsrc(S2)});
+		    make_jump_(Compile, Options, JSrc, 
+			       {T,fsrc(S1,St),fsrc(S2,St)},St);
 	       true ->
-		    make_jump_(Compile, Options, JSrc, {T,src(S1),src(S2)})
+		    make_jump_(Compile, Options, JSrc, 
+			       {T,src(S1,St),src(S2,St)},St)
 	    end;
 	Test when is_atom(Test); is_integer(Test)  ->
 	    T = enc_status(Test),
-	    make_jump_(Compile, Options, JSrc, T)
+	    make_jump_(Compile, Options, JSrc, T, St)
     end.
 
 ins_ijump(Compile, {ijump, Options}, St) ->
@@ -1166,7 +1187,7 @@ make_ijump_(Compile, [], Type, {Src}, _Dst, _Def, _JSrc, St) ->
 make_ijump_(Compile, [Option|Options], T, Src, Dst, Def, JSrc, St) ->
     case Option of
 	{src,S} -> %% jump indirect from source register/mem
-	    make_ijump_(Compile, Options, T, src(S), Dst, Def, JSrc, St);
+	    make_ijump_(Compile, Options, T, src(S,St), Dst, Def, JSrc, St);
 	{dst,D} -> %% jump indirect via destination register/mem,
 	    make_ijump_(Compile, Options, T,  Src, dst(D), Def, JSrc, St);
 	{default,L} when is_atom(L) -> %% default destination (dst)
@@ -1251,7 +1272,7 @@ ins_call(Compile, {call, Type, Ret, Args, L0}, St) ->
     add_target(L0, Jump, St).
 
 ins_icall(Compile, {icall, Type, Ret, Args, S}, St) ->
-    Src = src(S),
+    Src = src(S,St),
     Type1 = encode_icall_type(Type),
     RetType = encode_ret(Ret),
     ArgTypes = RetType bor encode_args(Args),
@@ -1288,21 +1309,21 @@ ins_return(Compile, return, St) ->
 ins_return(Compile, {return, Op0, S}, St) ->
     case Op0 of
 	mov -> 
-	    Src = src(S),
+	    Src = src(S,St),
 	    ok = emit(Compile, return, [?SLJIT_MOV, Src]);
 	mov_p ->
-	    Src = src(S),
+	    Src = src(S,St),
 	    ok = emit(Compile, return, [?SLJIT_MOV_P, Src]);
 	mov_f32 ->
 	    %% fixme: emit imm float
-	    Src = fsrc(S),
+	    Src = fsrc(S,St),
 	    ok = emit(Compile, return, [?SLJIT_MOV_F32, Src]);
 	mov_f64 ->
 	    %% fixme: emit imm float
-	    Src = fsrc(S),
+	    Src = fsrc(S,St),
 	    ok = emit(Compile, return, [?SLJIT_MOV_F64, Src]);
 	_ when is_integer(Op0) ->
-	    Src = src(S), 
+	    Src = src(S,St), 
 	    ok = emit(Compile, return, [Op0, Src])
     end,
     St.
@@ -1320,7 +1341,7 @@ ins_simd_op2(Compile, {Ins, Fs, D, S1, S2}, St) when is_list(Fs) ->
     OpF = encode_simd_op2_flags(Fs),
     Dst = vreg(D),
     Src1 = vreg(S1),
-    Src2 = vsrc(S2),
+    Src2 = vsrc(S2,St),
     ok = emit(Compile, simd_op2, [Op bor OpF, Dst, Src1, Src2]),
     St.
 
@@ -1410,7 +1431,7 @@ ins_simd_mov(Compile, {Ins, Fs, VReg, SrcDst}, St) when is_list(Fs) ->
 	 end,
     OpF = encode_simd_op2_flags(Fs),
     Reg = vreg(VReg),
-    Src = src(SrcDst),
+    Src = src(SrcDst,St),
     ok = emit(Compile, simd_mov, [Op bor OpF, Reg, Src]),
     St.
 
@@ -1608,22 +1629,27 @@ sd(R, v) when is_atom(R) -> vreg(R).
 -spec dst(dst()) -> dst().
 dst(D) -> sd(D, r).
 
--spec src(src()) -> src().
-src(Imm) when is_integer(Imm) ->       {imm, Imm};
-src({imm,Imm}) when is_integer(Imm) -> {imm, Imm};
-src(S) -> sd(S, r).
+-spec src(src(), context()) -> src().
+src(Imm,_St) when is_integer(Imm) ->       {imm, Imm};
+src({imm,Imm},_St) when is_integer(Imm) -> {imm, Imm};
+src(Name, St=#{ defines := Defs}) when is_atom(Name) ->
+    case maps:get(Name, Defs, undefined) of
+	undefined -> sd(Name, r);
+	Value when is_integer(Value) -> {imm,Value}
+    end;
+src(S,_St) -> sd(S, r).
 
 -spec fdst(fdst()) -> fdst().
 fdst(D) -> sd(D, f).
 
--spec fsrc(fsrc()) -> fsrc().
-fsrc(S) -> sd(S, f).
+-spec fsrc(fsrc(), context()) -> fsrc().
+fsrc(S,_St) -> sd(S, f).
 
 -spec vdst(vdst()) -> vdst().
 vdst(D) -> sd(D, v).
 
--spec vsrc(vsrc()) -> vsrc().
-vsrc(S) -> sd(S, v).
+-spec vsrc(vsrc(),context()) -> vsrc().
+vsrc(S,_St) -> sd(S, v).
 
 
 
