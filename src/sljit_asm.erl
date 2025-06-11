@@ -30,7 +30,7 @@
 
 -type vsrc() :: sljit:vsrc().
 -type vdst() :: sljit:vdst().
--type vsrcdst() :: sljit:vsrcdst().
+%% -type vsrcdst() :: sljit:vsrcdst().
 
 -type context() :: #{ defines => map(), 
 		      constants => [{atom(),sljit:const()}] }.
@@ -98,7 +98,9 @@
 -type op_fcopy() :: copy_to_f64 | copy32_to_f32 | copy_from_f64 | 
 		    copy32_from_f32.
 
--type simd_op2() :: vand | vor | vxor | shuffle.
+-type simd_op2() :: vand | vor | vxor | shuffle |
+		    vadd .
+
 
 -type simd_mov() :: vload | vstore.
 
@@ -108,9 +110,14 @@
 -define(test_flag(F, X), ((X) band (F)) =:= (F)).
 
 %% Create assemble context
-create_context(Arch, Compiler) ->
+create_context(Arch, _Compiler) ->
     Info = sljit:get_platform_info(),
-    Defs = maps:get(Arch, Info), %% get initial system defs
+    Arch1 = if Arch =:= native ->
+		    element(1, sljit:get_platform_name(native));
+	       true ->
+		    Arch
+	    end,
+    Defs = maps:get(Arch1, Info), %% get initial system defs
     #{ defines => Defs, constants => [] }.
 
 %% Assemble a file.asm into slo object binary
@@ -291,6 +298,9 @@ print_object(Ins, Fd) ->
 
 -undef(SIMD_OP2_NAME).
 -define(SIMD_OP2_NAME(I, N), N -> I; ).
+
+-undef(SIMD_ARITH_OP2_NAME).
+-define(SIMD_ARITH_OP2_NAME(I, N), N -> I; ).
 
 -undef(SIMD_MOV_NAME).
 -define(SIMD_MOV_NAME(I, N), N -> I; ).
@@ -737,6 +747,7 @@ asm_ins(Compile, Instruction, St) ->
 	simd_mov -> ins_simd_mov(Compile, Instruction, St);
 	const -> ins_const(Compile, Instruction, St);
 	op_addr -> ins_op_addr(Compile,  Instruction, St);
+	simd_arith_op2 -> ins_simd_arith_op2(Compile, Instruction, St);
 	Fmt -> throw({error, {unknown_format, Fmt}})
     end.
 
@@ -1345,6 +1356,23 @@ ins_simd_op2(Compile, {Ins, Fs, D, S1, S2}, St) when is_list(Fs) ->
     ok = emit(Compile, simd_op2, [Op bor OpF, Dst, Src1, Src2]),
     St.
 
+-undef(SIMD_ARITH_OP2_NAME).
+-define(SIMD_ARITH_OP2_NAME(I, N), I -> N; ).
+
+ins_simd_arith_op2(Compile, {Ins, D, S1, S2}, St) ->
+    ins_simd_arith_op2(Compile, {Ins, [], D, S1, S2}, St);
+ins_simd_arith_op2(Compile, {Ins, Fs, D, S1, S2}, St) when is_list(Fs) ->
+    Op = case Ins of
+	     ?SIMD_ARITH_OP2_LIST
+	     _ -> throw({error, {unknown_simd_op2, Ins}})
+	 end,
+    OpF = encode_simd_op2_flags(Fs),
+    Dst = vreg(D),
+    Src1 = vreg(S1),
+    Src2 = vsrc(S2,St),
+    ok = emit(Compile, simd_arith_op2, [Op bor OpF, Dst, Src1, Src2]),
+    St.
+
 
 encode_simd_op2_flags(Fs) ->
     vflags(Fs, 0,
@@ -1510,7 +1538,8 @@ emit_func(module) -> module;
 emit_func(function) -> function;
 emit_func(op_addr) -> emit_op_addr;
 emit_func(jump_addr) -> jump_addr;
-emit_func(label_addr) -> label_addr.
+emit_func(label_addr) -> label_addr;
+emit_func(simd_arith_op2) -> emit_simd_arith_op2.
 
 
 -undef(OP0_NAME).
@@ -1549,6 +1578,9 @@ emit_func(label_addr) -> label_addr.
 -undef(SIMD_OP2_NAME).
 -define(SIMD_OP2_NAME(I, N), I -> simd_op2; ).
 
+-undef(SIMD_ARITH_OP2_NAME).
+-define(SIMD_ARITH_OP2_NAME(I, N), I -> simd_arith_op2; ).
+
 -undef(SIMD_MOV_NAME).
 -define(SIMD_MOV_NAME(I, N), I -> simd_mov; ).
 
@@ -1564,6 +1596,7 @@ fmt(Ins) ->
 	?FOP2_LIST
 	?OP_FCOPY_LIST
 	?SIMD_OP2_LIST
+	?SIMD_ARITH_OP2_LIST
 	?SIMD_MOV_LIST
 	%% ?OP_SHIFT_INTO_LIST - handled by op2
 	label -> label;
@@ -1632,7 +1665,7 @@ dst(D) -> sd(D, r).
 -spec src(src(), context()) -> src().
 src(Imm,_St) when is_integer(Imm) ->       {imm, Imm};
 src({imm,Imm},_St) when is_integer(Imm) -> {imm, Imm};
-src(Name, St=#{ defines := Defs}) when is_atom(Name) ->
+src(Name, _St=#{ defines := Defs}) when is_atom(Name) ->
     case maps:get(Name, Defs, undefined) of
 	undefined -> sd(Name, r);
 	Value when is_integer(Value) -> {imm,Value}

@@ -9,6 +9,7 @@
 
 -on_load(init/0).
 -export([get_platform_name/0]).
+-export([get_platform_name/1]).
 -export([get_platform_info/0]).
 -export([cpu_features/0, cpu_features/1]).
 -export([cpu_feature/1, cpu_feature/2]).
@@ -67,6 +68,8 @@
 -export([set_constant/2, set_constant/3]).
 -export([emit_op_addr/3]).
 -export([set_jump/2, set_jump/3]).
+%% new operations
+-export([emit_simd_arith_op2/5]).
 
 %% -export([emit_select/6]).
 %% -export([emit_fselect/6]).
@@ -81,6 +84,9 @@
 %% -export([emit_simd_extend/5]).
 %% -export([emit_simd_sign/4]).
 
+-export([create_memory/1]).
+-export([read_memory/1, read_memory/2, read_memory/3]).
+-export([write_memory/2, write_memory/3, write_memory/4]).
 
 -type compiler() :: reference().
 -type code() :: reference() | Mod::atom() | {Mod::atom(), Func::atom()} | 
@@ -89,6 +95,7 @@
 -type jump() :: reference().
 -type const() :: reference().
 -type unsigned() :: non_neg_integer().
+-type memory() :: reference().
 
 -type arch() :: x86_32 | x86_64 | arm_v6 | arm_v7 | arm_thumb2 | arm_64 |
 		ppc_32 | ppc_64 | mips_32 | mips_64 | riscv_32 | riscv_64 |
@@ -160,8 +167,13 @@ create_compiler() ->
 create_compiler(_Arch) ->
     ?nif_stub().
 
--spec get_platform_name() -> string().
+-spec get_platform_name() -> [{Arch::arch(), Info::string()}].
 get_platform_name() ->
+    ?nif_stub().
+
+-spec get_platform_name(Arch::arch()) ->
+	  {Arch::arch(), Info::string()} | [{Arch::arch(), Info::string()}].
+get_platform_name(_Arch) ->
     ?nif_stub().
 
 -type platform_info() :: #{ number_of_registers => integer(),
@@ -270,7 +282,41 @@ disasm(Code) ->
     Bin = get_code(Code),
     disasm:bin(x86_64, [{mode,64}], Bin).
 
--type arg_type() :: integer() | float() | binary().
+%% call memory argument handle
+-spec create_memory(Size::integer()) -> memory().
+create_memory(_Size) ->
+    ?nif_stub().    
+
+-spec read_memory(Mem::memory()) -> binary().
+read_memory(_Mem) ->
+    ?nif_stub().
+
+-spec read_memory(Mem::memory(), Pos::integer()) -> binary().
+read_memory(_Mem, _Pos) ->
+    ?nif_stub().
+
+-spec read_memory(Mem::memory(), Pos::integer(), Size::integer()) -> binary().
+read_memory(_Mem, _Pos, _Size) ->
+    ?nif_stub().
+
+-spec write_memory(Mem::memory(), Data::binary()) -> 
+	  Written::integer().
+write_memory(_Mem, _Data) ->
+    ?nif_stub().
+
+-spec write_memory(Mem::memory(),Pos::integer(), 
+		   Data::binary()) ->
+	  Written::integer().
+write_memory(_Mem, _Pos, _Data) ->
+    ?nif_stub().
+
+-spec write_memory(Mem::memory(), Pos::integer(), Size::integer(),
+		   Data::binary()) ->
+	  Written::integer().
+write_memory(_Mem, _Pos, _Size, _Data) ->
+    ?nif_stub().
+
+-type arg_type() :: integer() | float() | binary() | memory().
 -type ret_type() :: ok | integer() | float().
 
 -spec call(Code::code()) -> ret_type().
@@ -481,6 +527,11 @@ emit_return_to(_Compiler, _Src) ->
 -spec emit_simd_op2(compiler(), Type::integer(), 
 		    DstVReg::vreg(), Src1::vreg(), Src2::vsrc()) -> ok.
 emit_simd_op2(_Compiler, _Type, _Dst, _Src1, _Src2) -> 
+    ?nif_stub().
+
+-spec emit_simd_arith_op2(compiler(), Type::integer(), 
+			  DstVReg::vreg(), Src1::vreg(), Src2::vsrc()) -> ok.
+emit_simd_arith_op2(_Compiler, _Type, _Dst, _Src1, _Src2) -> 
     ?nif_stub().
 
 -spec emit_simd_mov(compiler(), Type::integer(), 

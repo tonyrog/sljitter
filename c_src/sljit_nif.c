@@ -12,6 +12,7 @@
 #define SLJIT_CONFIG_UNSUPPORTED 1
 // #include "sljitConfigInternal.h"
 #include "sljitLir.h"
+#include "sljitSimd.h"
 
 #include "sljitter_backend.h"
 
@@ -41,6 +42,7 @@
     NIF("label_addr", 3, nif_label_addr) \
     NIF("jump_addr",  3, nif_jump_addr) \
     NIF("get_platform_name", 0, nif_get_platform_name) \
+    NIF("get_platform_name", 1, nif_get_platform_name) \
     NIF("get_platform_info", 0, nif_get_platform_info) \
     NIF("generate_code", 1, nif_generate_code) \
     NIF("unregister_code", 1, nif_unregister_code) \
@@ -81,13 +83,20 @@
     NIF("emit_return_void", 1, nif_emit_return_void) \
     NIF("emit_return_to", 2, nif_emit_return_to) \
     NIF("emit_simd_op2", 5, nif_emit_simd_op2) \
-    NIF("emit_simd_mov", 4, nif_emit_simd_mov)	 \
+    NIF("emit_simd_mov", 4, nif_emit_simd_mov) \
+    NIF("emit_simd_arith_op2", 5, nif_emit_simd_arith_op2) \
     NIF("get_label_addr", 1, nif_get_label_addr) \
     NIF("emit_const", 4, nif_emit_const) \
     NIF("set_constant", 3, nif_set_constant) \
     NIF("emit_op_addr", 3, nif_emit_op_addr) \
-    NIF("set_jump", 3, nif_set_jump)
-    
+    NIF("set_jump", 3, nif_set_jump) \
+    NIF("create_memory", 1, nif_create_memory) \
+    NIF("read_memory", 1, nif_read_memory) \
+    NIF("read_memory", 2, nif_read_memory) \
+    NIF("read_memory", 3, nif_read_memory) \
+    NIF("write_memory", 2, nif_write_memory) \
+    NIF("write_memory", 3, nif_write_memory) \
+    NIF("write_memory", 4, nif_write_memory)
 
 DECL_ATOM(sljit);
 DECL_ATOM(ok);
@@ -234,6 +243,7 @@ static ErlNifResourceType* code_res;
 static ErlNifResourceType* label_res;
 static ErlNifResourceType* jump_res;
 static ErlNifResourceType* const_res;
+static ErlNifResourceType* memory_res;
 
 typedef struct {
     struct sljit_jump* jump;
@@ -1080,24 +1090,40 @@ ERL_NIF_TERM nif_get_platform_name(ErlNifEnv* env, int argc,
 {
     UNUSED(argc);
     UNUSED(argv);
-    const char* name;    
+    const char* name;
     ERL_NIF_TERM list;
-    ERL_NIF_TERM last;
+    ERL_NIF_TERM last = ATOM(undefined);
+    ERL_NIF_TERM match = ATOM(undefined);
     unsigned int num = 0;
     int i;
+
+    if (argc == 1) {
+	if (!enif_is_atom(env, argv[0]))
+	    return EXCP_BADARG_N(env, 0, "not a atom");
+	if (argv[0] == ATOM(native))
+	    match = native_backend_name();
+	else
+	    match = argv[0];
+	// find backend
+    }
     
     list = enif_make_list(env, 0);
     for (i = 0; backend_list[i].name != NULL; i++) {
 	sljitter_backend_t* bep;
 	if ((bep = select_backend_by_name(backend_list[i].name)) != NULL) {
-	    name = (bep->get_platform_name)();
-	    last = enif_make_tuple2(env, *(backend_list[i].atm),
-				    enif_make_string(env,name,ERL_NIF_LATIN1));
-	    list = enif_make_list_cell(env, last, list);
-	    num++;
+	    if ((match == ATOM(undefined)) || (match == *(backend_list[i].atm))) {
+		name = (bep->get_platform_name)();
+		last = enif_make_tuple2(env, *(backend_list[i].atm),
+					enif_make_string(env,name,ERL_NIF_LATIN1));
+		list = enif_make_list_cell(env, last, list);
+		num++;
+	    }
 	}
     }
-    return list;
+    if ((match == ATOM(undefined)) || (num > 1))
+	return list;
+    else
+	return last;
 }
 
 // Create a map of platform info maps:
@@ -1585,6 +1611,26 @@ ERL_NIF_TERM copy_term_from_mem(ErlNifEnv* env, nif_ctx_t* ctx,
     return term;
 }
 
+//
+void dump_mem(FILE* fout, void* ptr, size_t size)
+{
+    int offs = 0;
+    while(size) {
+	int i = 16;
+
+	fprintf(fout, "%08lx: ", (unsigned long) ptr);
+	while(size && i) {
+	    fprintf(fout, "0x%02x ", ((uint8_t*)ptr)[offs]);
+	    offs++;
+	    i--;
+	    size--;
+	}
+	if (i == 0)
+	    fprintf(fout, "\r\n");
+    }
+}
+
+
 ERL_NIF_TERM emulator_call(ErlNifEnv* env, code_t* crp,
 			   export_entry_t* xent,
 			   int argc, const ERL_NIF_TERM* argv)
@@ -1617,7 +1663,7 @@ ERL_NIF_TERM emulator_call(ErlNifEnv* env, code_t* crp,
     for (i = 0; i < SLJIT_NUMBER_OF_EMU_FLOAT_REGISTERS; i++)
 	st->fr[i].f64 = (double) i;
     for (i = 0; i < SLJIT_NUMBER_OF_EMU_VECTOR_REGISTERS; i++)
-	st->vr[i].vi8[0] = i;
+	memset(st->vr[i].vu8, i, VSIZE);
 
     // parse all arguments
     for (i = 0; i < argc; i++) {
@@ -1643,18 +1689,27 @@ ERL_NIF_TERM emulator_call(ErlNifEnv* env, code_t* crp,
 	    break;
 	}
 	case SLJIT_ARG_TYPE_P:
-	case SLJIT_ARG_TYPE_P_R:
-	    if (!enif_inspect_iolist_as_binary(env, argv[i], &bin[i]))
-		return EXCP_BADARG_N(env, i, "not an iolist");
+	case SLJIT_ARG_TYPE_P_R: {
+	    void* ptr;
+	    size_t size;
+	    if (enif_get_resource(env, argv[i], memory_res, (void**)&ptr))
+		size = enif_sizeof_resource(ptr);
+	    else if (enif_inspect_iolist_as_binary(env, argv[i], &bin[i])) {
+		ptr = bin[i].data;
+		size = bin[i].size;
+	    }
+	    else
+		return EXCP_BADARG_N(env, i, "not an iolist nor memory");
 	    // copy binary to "sand boxed" memory
+	    // align dp before? vector?  2/4/8/16/32/64
 	    arg[i].sw = dp;  // pass address in memory
-	    DBG("copy dst=%p, src=%p, size=%ld\r\n",
-		st->mem_base+dp, bin[i].data, bin[i].size);
-	    memcpy(st->mem_base+dp, bin[i].data, bin[i].size);
-	    dp += bin[i].size;
+	    DBG("copy dst=%p, src=%p, size=%ld\r\n", st->mem_base+dp,ptr,size);
+	    memcpy(st->mem_base+dp, ptr, size);
+	    dp += size;
 	    // align to next word address
 	    dp = (dp + (sizeof(sljit_uw)-1)) & ~(sizeof(sljit_uw)-1);
 	    break;
+	}
 	case SLJIT_ARG_TYPE_F64:
 	    if (!enif_get_double(env, argv[i], &arg[i].f64))
 		return EXCP_BADARG_N(env, i+1, "not a float");
@@ -1675,6 +1730,26 @@ ERL_NIF_TERM emulator_call(ErlNifEnv* env, code_t* crp,
 	(crp->backend->run)(&ctx->emu, crp->addr, crp->code_size,
 			    (void*) xent->addr,
 			    (void*) &arg[0], arg_types, (void*) &ret);
+    }
+
+    // copy back memory results in a loop over arguments!!!
+    for (i = 0; i < argc; i++) {
+	switch(ARGTYPE(arg_types, i)) {
+	case SLJIT_ARG_TYPE_P:
+	case SLJIT_ARG_TYPE_P_R: {
+	    void* ptr;
+	    size_t size;
+	    if (enif_get_resource(env, argv[i], memory_res, (void**)&ptr)) {
+		size = enif_sizeof_resource(ptr);
+		// copy back data from sandboxed memory
+		DBG("copy src=%p, dst=%p, size=%ld\r\n",
+		    st->mem_base+arg[i].sw,ptr,size);
+		memcpy(ptr, st->mem_base+arg[i].sw, size);
+	    }
+	}
+	default:
+	    break;
+	}
     }
     
     switch(ARGTYPE_RET(arg_types)) {
@@ -1767,11 +1842,23 @@ ERL_NIF_TERM native_call(ErlNifEnv* env, export_entry_t* xent,
 	    av_int(alist, (int) arg[i].s32);
 	    break;
 	case SLJIT_ARG_TYPE_P:
-	case SLJIT_ARG_TYPE_P_R:
-	    if (!enif_inspect_iolist_as_binary(env, argv[i], &bin[i]))
-		return EXCP_BADARG_N(env, i, "not an iolist");
-	    av_ptr(alist, void*, bin[i].data);
+	case SLJIT_ARG_TYPE_P_R: {
+	    void* ptr;
+	    size_t size;
+	    if (enif_get_resource(env, argv[i], memory_res, (void**)&ptr))
+		size = enif_sizeof_resource(ptr);
+	    else if (enif_inspect_iolist_as_binary(env, argv[i], &bin[i])) {
+		ptr = bin[i].data;
+		size = bin[i].size;
+	    }
+	    else
+		return EXCP_BADARG_N(env, i, "not an iolist nor memory");
+	    (void) size;
+	    // fprintf(stderr, "ptr[%d] = ", i);
+	    // dump_mem(stderr, ptr, size);
+	    av_ptr(alist, void*, ptr);
 	    break;
+	}
 	case SLJIT_ARG_TYPE_F64:
 	    if (!enif_get_double(env, argv[i], &arg[i].f64))
 		return EXCP_BADARG_N(env, i, "not a float");
@@ -1787,8 +1874,12 @@ ERL_NIF_TERM native_call(ErlNifEnv* env, export_entry_t* xent,
 	}
     }
 
+    // fprintf(stderr, "native enter\r\n");
+
     av_call (alist);
 
+    // fprintf(stderr, "native leave\r\n");
+    
     switch(ARGTYPE_RET(xent->arg_types)) {
     case SLJIT_ARG_TYPE_RET_VOID:
 	return ATOM(ok);
@@ -2614,6 +2705,36 @@ ERL_NIF_TERM nif_emit_simd_op2(ErlNifEnv* env, int argc,
     return nif_return(env, ret);
 }
 
+ERL_NIF_TERM nif_emit_simd_arith_op2(ErlNifEnv* env, int argc,
+				     const ERL_NIF_TERM argv[])
+{
+    UNUSED(argc);
+    compiler_t* cp;
+    sljit_s32 ret;
+    sljit_s32 type;
+    sljit_s32 dst_vreg; 
+    sljit_s32 src1_vreg;
+    sljit_s32 src2;
+    sljit_sw src2w;
+
+    if (!enif_get_resource(env, argv[0], compiler_res, (void**)&cp))
+	return EXCP_BADARG_N(env, 0, "not a compiler");
+    if (!get_s32(env, argv[1], &type))
+	return EXCP_BADARG_N(env, 1, "not a valid simd_op2");
+
+    if (!get_reg(env, cp, argv[2], REG_V, &dst_vreg))
+	return EXCP_BADARG_N(env, 2, "bad vector reg");
+    if (!get_reg(env, cp, argv[3], REG_V, &src1_vreg))
+	return EXCP_BADARG_N(env, 3, "bad vector reg");
+    if (!get_arg(env, cp, argv[4], REG_V, &src2, &src2w))
+	return EXCP_BADARG_N(env, 4, "bad source");    
+
+    ret = (cp->backend->emit_simd_arith_op2)(cp->compiler, type,
+					     dst_vreg, src1_vreg,
+					     src2, src2w);
+    return nif_return(env, ret);
+}
+
 ERL_NIF_TERM nif_emit_simd_mov(ErlNifEnv* env, int argc,
 			       const ERL_NIF_TERM argv[])
 {
@@ -2788,6 +2909,97 @@ ERL_NIF_TERM nif_set_jump(ErlNifEnv* env, int argc,
     return ATOM(ok);
 }
 
+ERL_NIF_TERM nif_create_memory(ErlNifEnv* env, int argc,
+			       const ERL_NIF_TERM argv[])
+{
+    UNUSED(argc);
+    ERL_NIF_TERM term;
+    sljit_uw mem_size;
+    void* mem;
+
+    if (!get_uw(env, argv[0], &mem_size))
+	return EXCP_BADARG_N(env, 0, "bad size");
+    mem = enif_alloc_resource(memory_res, mem_size);
+    memset(mem, 0, mem_size);
+    term = enif_make_resource(env,mem);
+    enif_release_resource(mem);
+    return term;
+}
+
+ERL_NIF_TERM nif_read_memory(ErlNifEnv* env, int argc,
+			     const ERL_NIF_TERM argv[])
+{
+    void* mem;
+    sljit_uw mem_pos;
+    sljit_uw mem_size;
+    sljit_uw mem_sizeof;
+    ErlNifBinary binary;
+
+    if (!enif_get_resource(env, argv[0], memory_res, (void**)&mem))
+	return EXCP_BADARG_N(env, 0, "not memory");
+    mem_sizeof = enif_sizeof_resource(mem);
+
+    if (argc == 1) {
+	mem_pos = 0;
+	mem_size = mem_sizeof;
+    }
+    else if (argc == 2) {
+	if (!get_uw(env, argv[1], &mem_pos))
+	    return EXCP_BADARG_N(env, 1, "bad pos");
+    }
+    else if (argc == 3) {
+	if (!get_uw(env, argv[1], &mem_pos))
+	    return EXCP_BADARG_N(env, 1, "bad pos");
+	if (!get_uw(env, argv[2], &mem_size))
+	    return EXCP_BADARG_N(env, 2, "bad size");
+    }
+    if (mem_pos >= mem_sizeof)
+	mem_size = 0;
+    else if (mem_pos + mem_size > mem_sizeof)
+	mem_size = mem_sizeof - mem_pos;
+    if (!enif_alloc_binary(mem_size, &binary))
+	return enif_make_badarg(env);
+    memcpy(binary.data, ((uint8_t*) mem)+mem_pos, mem_size);
+    return enif_make_binary(env, &binary);
+}
+
+ERL_NIF_TERM nif_write_memory(ErlNifEnv* env, int argc,
+			      const ERL_NIF_TERM argv[])
+{
+    void* mem;
+    sljit_uw mem_pos;
+    sljit_uw mem_size;
+    sljit_uw mem_sizeof;
+    ErlNifBinary binary;    
+    
+    if (!enif_get_resource(env, argv[0], memory_res, (void**)&mem))
+	return EXCP_BADARG_N(env, 0, "not memory");
+    if (!enif_inspect_iolist_as_binary(env, argv[argc-1], &binary))
+	return EXCP_BADARG_N(env, argc-1, "bad iolist");
+    mem_sizeof = enif_sizeof_resource(mem);
+    if (argc == 2) {
+	mem_pos = 0;
+	mem_size = binary.size;
+    }
+    else if (argc == 3) {
+	if (!get_uw(env, argv[1], &mem_pos))
+	    return EXCP_BADARG_N(env, 1, "bad pos");
+	mem_size = binary.size;
+    }
+    else if (argc == 4) {
+	if (!get_uw(env, argv[1], &mem_pos))
+	    return EXCP_BADARG_N(env, 1, "bad pos");
+	if (!get_uw(env, argv[2], &mem_size))
+	    return EXCP_BADARG_N(env, 2, "bad size");
+    }
+    if (mem_pos >= binary.size)
+	mem_size = 0;
+    else if (mem_pos + mem_size > mem_sizeof)
+	mem_size = mem_sizeof - mem_pos;
+    if (binary.size < mem_size) mem_size = binary.size;
+    memcpy(((uint8_t*) mem)+mem_pos, binary.data, mem_size);
+    return make_uw(env, mem_size);
+}
 
 // create all tracing NIFs
 #ifdef NIF_TRACE
@@ -2882,7 +3094,7 @@ static void code_dtor(ErlNifEnv* env, void* ptr)
     (crp->backend->free_code)(crp->addr, crp->exec_allocator_data);
 }
 
-// label is not used any more, but is reachamble through compuler struct
+// label is not used any more, but is reachable through compiler struct
 static void label_dtor(ErlNifEnv* env, void* ptr)
 {
     UNUSED(env);
@@ -2890,7 +3102,7 @@ static void label_dtor(ErlNifEnv* env, void* ptr)
     DBG("label_dtor\r\n");
 }
 
-// jump is not used any more, but is reachamble through compuler struct
+// jump is not used any more, but is reachable through compiler struct
 static void jump_dtor(ErlNifEnv* env, void* ptr)
 {
     UNUSED(env);
@@ -2898,12 +3110,20 @@ static void jump_dtor(ErlNifEnv* env, void* ptr)
     DBG("jump_dtor\r\n");
 }
 
-// const is not used any more, but is reachamble through compuler struct
+// const is not used any more, but is reachable through compiler struct
 static void const_dtor(ErlNifEnv* env, void* ptr)
 {
     UNUSED(env);
     UNUSED(ptr);    
     DBG("const_dtor\r\n");
+}
+
+// memory 
+static void memory_dtor(ErlNifEnv* env, void* ptr)
+{
+    UNUSED(env);
+    UNUSED(ptr);    
+    DBG("memory_dtor\r\n");
 }
 
 static void load_atoms(ErlNifEnv* env)
@@ -3137,6 +3357,11 @@ static int sljit_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
 				       code_dtor,
 				       ERL_NIF_RT_CREATE,
 				       &tried);
+    memory_res = enif_open_resource_type(env, 0,
+					 "memory",
+					 memory_dtor,
+					 ERL_NIF_RT_CREATE,
+					 &tried);            
     if ((ctx = (nif_ctx_t*) enif_alloc(sizeof(nif_ctx_t))) == NULL)
 	return -1;
     ctx->mod_list = NULL;
@@ -3188,7 +3413,13 @@ static int sljit_upgrade(ErlNifEnv* env, void** priv_data,
 				       code_dtor,
 				       ERL_NIF_RT_CREATE |
 				       ERL_NIF_RT_TAKEOVER,
-				       &tried);    
+				       &tried);
+    memory_res = enif_open_resource_type(env, 0,
+					 "memory",
+					 memory_dtor,
+					 ERL_NIF_RT_CREATE |
+					 ERL_NIF_RT_TAKEOVER,
+					 &tried);        
 
     load_atoms(env);
 
