@@ -51,8 +51,8 @@
 	andalso
 	  ((X) =< ?SLJIT_F_LESS_EQUAL)).
 
-%% -define(dbg(Fmt, Args), io:format(Fmt, Args)).
--define(dbg(Fmt, Args), ok).
+-define(dbg(Fmt, Args), io:format(Fmt, Args)).
+%% -define(dbg(Fmt, Args), ok).
 
 -type op0() :: breakpoint | nop | lmul_uw | lmul_sw | divmod_uw |
 	       divmod_u32 | divmod_sw | divmod_s32 | div_uw |
@@ -101,11 +101,16 @@
 -type simd_op2() :: vand | vor | vxor | shuffle |
 		    vadd .
 
+-type simd_arith_op2() :: vadd | vsub | vmul | vsll | vsrl | sra.
+
+-type simd_arith_op1() :: vneg | vnot | vabs | vsqrt.
+
 
 -type simd_mov() :: vload | vstore.
 
 -export_type([op0/0, op1/0, op2/0, op2r/0, op_shift_into/0, op_src/0, op_dst/0]).
 -export_type([fop1/0, fop2/0, fop2r/0, op_fcopy/0, simd_op2/0, simd_mov/0]).
+-export_type([simd_arith_op2/0, simd_arith_op1/0]).
 
 -define(test_flag(F, X), ((X) band (F)) =:= (F)).
 
@@ -301,6 +306,9 @@ print_object(Ins, Fd) ->
 
 -undef(SIMD_ARITH_OP2_NAME).
 -define(SIMD_ARITH_OP2_NAME(I, N), N -> I; ).
+
+-undef(SIMD_ARITH_OP1_NAME).
+-define(SIMD_ARITH_OP1_NAME(I, N), N -> I; ).
 
 -undef(SIMD_MOV_NAME).
 -define(SIMD_MOV_NAME(I, N), N -> I; ).
@@ -748,6 +756,7 @@ asm_ins(Compile, Instruction, St) ->
 	const -> ins_const(Compile, Instruction, St);
 	op_addr -> ins_op_addr(Compile,  Instruction, St);
 	simd_arith_op2 -> ins_simd_arith_op2(Compile, Instruction, St);
+	simd_arith_op1 -> ins_simd_arith_op1(Compile, Instruction, St);
 	Fmt -> throw({error, {unknown_format, Fmt}})
     end.
 
@@ -1191,9 +1200,9 @@ make_ijump_(Compile, [], Type, _Src, Dst, Def, JSrc, St) ->
     noemit(Compile, constant, [JSrc, Const]), %% jsrc=undefined => anonymous
     ok = emit(Compile, ijump, [Type, Dst]),
     St;
-make_ijump_(Compile, [], Type, {Src}, _Dst, _Def, _JSrc, St) ->
-    ok = emit(Compile, ijump, [Type, Src]),
-    St;
+%%make_ijump_(Compile, [], Type, {Src}, _Dst, _Def, _JSrc, St) ->
+%%   ok = emit(Compile, ijump, [Type, Src]),
+%%    St;
 
 make_ijump_(Compile, [Option|Options], T, Src, Dst, Def, JSrc, St) ->
     case Option of
@@ -1349,7 +1358,7 @@ ins_simd_op2(Compile, {Ins, Fs, D, S1, S2}, St) when is_list(Fs) ->
 	     ?SIMD_OP2_LIST
 	     _ -> throw({error, {unknown_simd_op2, Ins}})
 	 end,
-    OpF = encode_simd_op2_flags(Fs),
+    OpF = encode_simd_op_flags(Fs),
     Dst = vreg(D),
     Src1 = vreg(S1),
     Src2 = vsrc(S2,St),
@@ -1359,6 +1368,9 @@ ins_simd_op2(Compile, {Ins, Fs, D, S1, S2}, St) when is_list(Fs) ->
 -undef(SIMD_ARITH_OP2_NAME).
 -define(SIMD_ARITH_OP2_NAME(I, N), I -> N; ).
 
+-undef(SIMD_ARITH_OP1_NAME).
+-define(SIMD_ARITH_OP1_NAME(I, N), I -> N; ).
+
 ins_simd_arith_op2(Compile, {Ins, D, S1, S2}, St) ->
     ins_simd_arith_op2(Compile, {Ins, [], D, S1, S2}, St);
 ins_simd_arith_op2(Compile, {Ins, Fs, D, S1, S2}, St) when is_list(Fs) ->
@@ -1366,15 +1378,28 @@ ins_simd_arith_op2(Compile, {Ins, Fs, D, S1, S2}, St) when is_list(Fs) ->
 	     ?SIMD_ARITH_OP2_LIST
 	     _ -> throw({error, {unknown_simd_op2, Ins}})
 	 end,
-    OpF = encode_simd_op2_flags(Fs),
+    OpF = encode_simd_op_flags(Fs),
     Dst = vreg(D),
     Src1 = vreg(S1),
     Src2 = vsrc(S2,St),
     ok = emit(Compile, simd_arith_op2, [Op bor OpF, Dst, Src1, Src2]),
     St.
 
+ins_simd_arith_op1(Compile, {Ins, D, S1}, St) ->
+    ins_simd_arith_op1(Compile, {Ins, [], D, S1}, St);
+ins_simd_arith_op1(Compile, {Ins, Fs, D, S1}, St) when is_list(Fs) ->
+    Op = case Ins of
+	     ?SIMD_ARITH_OP1_LIST
+	     _ -> throw({error, {unknown_simd_op1, Ins}})
+	 end,
+    OpF = encode_simd_op_flags(Fs),
+    Dst = vreg(D),
+    Src1 = vsrc(S1,St),
+    ok = emit(Compile, simd_arith_op1, [Op bor OpF, Dst, Src1]),
+    St.
 
-encode_simd_op2_flags(Fs) ->
+
+encode_simd_op_flags(Fs) ->
     vflags(Fs, 0,
 	   ?SLJIT_SIMD_REG_128,
 	   ?SLJIT_SIMD_ELEM_8,
@@ -1457,7 +1482,7 @@ ins_simd_mov(Compile, {Ins, Fs, VReg, SrcDst}, St) when is_list(Fs) ->
 	     ?SIMD_MOV_LIST
 	     _ -> throw({error, {unknown_simd_op2, Ins}})
 	 end,
-    OpF = encode_simd_op2_flags(Fs),
+    OpF = encode_simd_op_flags(Fs),
     Reg = vreg(VReg),
     Src = src(SrcDst,St),
     ok = emit(Compile, simd_mov, [Op bor OpF, Reg, Src]),
@@ -1539,6 +1564,7 @@ emit_func(function) -> function;
 emit_func(op_addr) -> emit_op_addr;
 emit_func(jump_addr) -> jump_addr;
 emit_func(label_addr) -> label_addr;
+emit_func(simd_arith_op1) -> emit_simd_arith_op1;
 emit_func(simd_arith_op2) -> emit_simd_arith_op2.
 
 
@@ -1581,6 +1607,9 @@ emit_func(simd_arith_op2) -> emit_simd_arith_op2.
 -undef(SIMD_ARITH_OP2_NAME).
 -define(SIMD_ARITH_OP2_NAME(I, N), I -> simd_arith_op2; ).
 
+-undef(SIMD_ARITH_OP1_NAME).
+-define(SIMD_ARITH_OP1_NAME(I, N), I -> simd_arith_op1; ).
+
 -undef(SIMD_MOV_NAME).
 -define(SIMD_MOV_NAME(I, N), I -> simd_mov; ).
 
@@ -1596,6 +1625,7 @@ fmt(Ins) ->
 	?FOP2_LIST
 	?OP_FCOPY_LIST
 	?SIMD_OP2_LIST
+	?SIMD_ARITH_OP1_LIST
 	?SIMD_ARITH_OP2_LIST
 	?SIMD_MOV_LIST
 	%% ?OP_SHIFT_INTO_LIST - handled by op2
@@ -1682,6 +1712,7 @@ fsrc(S,_St) -> sd(S, f).
 vdst(D) -> sd(D, v).
 
 -spec vsrc(vsrc(),context()) -> vsrc().
+vsrc(Imm,_St) when is_integer(Imm) -> {imm, Imm};
 vsrc(S,_St) -> sd(S, v).
 
 

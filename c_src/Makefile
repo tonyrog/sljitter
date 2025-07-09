@@ -54,7 +54,7 @@ sljitter_emulator.o: ../external/sljit/sljit_src/sljitLir.c sljitter_backend.h
 	$(CC) $(CFLAGS) -MF .sljitter_emulator.d -DSLJIT_CONFIG_EMULATOR=1 -c -o$@ -fPIC sljitter_backend.c
 
 sljitter_riscv_64.o: ../external/sljit/sljit_src/sljitLir.c sljitter_backend.h
-	$(CC) $(CFLAGS) -MF .sljitter_x86_64.d -DSLJIT_CONFIG_RISCV_64=1 -c -o$@ -fPIC sljitter_backend.c
+	$(CC) $(CFLAGS) -MF .sljitter_riscv_64.d -DSLJIT_CONFIG_RISCV_64=1 -c -o$@ -fPIC sljitter_backend.c
 
 %.o:	%.c
 	$(CC) $(CFLAGS) -c -fPIC $<

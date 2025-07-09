@@ -179,6 +179,10 @@ typedef struct _sljittter_backend_t {
 			       sljit_s32 type,
 			       sljit_s32 dst_vreg, sljit_s32 src1_vreg,
 			       sljit_s32 src2, sljit_sw src2w);
+    sljit_s32 (*emit_simd_arith_op1)(struct sljit_compiler *compiler,
+				     sljit_s32 type,
+				     sljit_s32 dst_vreg, 
+				     sljit_s32 src1, sljit_sw src1w);
     sljit_s32 (*emit_simd_arith_op2)(struct sljit_compiler *compiler,
 				     sljit_s32 type,
 				     sljit_s32 dst_vreg, sljit_s32 src1_vreg,

@@ -84,6 +84,7 @@
     NIF("emit_return_to", 2, nif_emit_return_to) \
     NIF("emit_simd_op2", 5, nif_emit_simd_op2) \
     NIF("emit_simd_mov", 4, nif_emit_simd_mov) \
+    NIF("emit_simd_arith_op1", 4, nif_emit_simd_arith_op1) \
     NIF("emit_simd_arith_op2", 5, nif_emit_simd_arith_op2) \
     NIF("get_label_addr", 1, nif_get_label_addr) \
     NIF("emit_const", 4, nif_emit_const) \
@@ -1732,7 +1733,7 @@ ERL_NIF_TERM emulator_call(ErlNifEnv* env, code_t* crp,
 			    (void*) &arg[0], arg_types, (void*) &ret);
     }
 
-    // copy back memory results in a loop over arguments!!!
+    // copy back memory results
     for (i = 0; i < argc; i++) {
 	switch(ARGTYPE(arg_types, i)) {
 	case SLJIT_ARG_TYPE_P:
@@ -2705,6 +2706,32 @@ ERL_NIF_TERM nif_emit_simd_op2(ErlNifEnv* env, int argc,
     return nif_return(env, ret);
 }
 
+ERL_NIF_TERM nif_emit_simd_arith_op1(ErlNifEnv* env, int argc,
+				     const ERL_NIF_TERM argv[])
+{
+    UNUSED(argc);
+    compiler_t* cp;
+    sljit_s32 ret;
+    sljit_s32 type;
+    sljit_s32 dst_vreg; 
+    sljit_s32 src1;
+    sljit_sw src1w;
+
+    if (!enif_get_resource(env, argv[0], compiler_res, (void**)&cp))
+	return EXCP_BADARG_N(env, 0, "not a compiler");
+    if (!get_s32(env, argv[1], &type))
+	return EXCP_BADARG_N(env, 1, "not a valid simd_arith_op1");
+
+    if (!get_reg(env, cp, argv[2], REG_V, &dst_vreg))
+	return EXCP_BADARG_N(env, 2, "bad vector reg");
+    if (!get_arg(env, cp, argv[3], REG_V, &src1, &src1w))
+	return EXCP_BADARG_N(env, 3, "bad source");    
+
+    ret = (cp->backend->emit_simd_arith_op1)(cp->compiler, type,
+					     dst_vreg, src1, src1w);
+    return nif_return(env, ret);
+}
+
 ERL_NIF_TERM nif_emit_simd_arith_op2(ErlNifEnv* env, int argc,
 				     const ERL_NIF_TERM argv[])
 {
@@ -2720,7 +2747,7 @@ ERL_NIF_TERM nif_emit_simd_arith_op2(ErlNifEnv* env, int argc,
     if (!enif_get_resource(env, argv[0], compiler_res, (void**)&cp))
 	return EXCP_BADARG_N(env, 0, "not a compiler");
     if (!get_s32(env, argv[1], &type))
-	return EXCP_BADARG_N(env, 1, "not a valid simd_op2");
+	return EXCP_BADARG_N(env, 1, "not a valid simd_arith_op2");
 
     if (!get_reg(env, cp, argv[2], REG_V, &dst_vreg))
 	return EXCP_BADARG_N(env, 2, "bad vector reg");

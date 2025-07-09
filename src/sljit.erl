@@ -69,6 +69,7 @@
 -export([emit_op_addr/3]).
 -export([set_jump/2, set_jump/3]).
 %% new operations
+-export([emit_simd_arith_op1/4]).
 -export([emit_simd_arith_op2/5]).
 
 %% -export([emit_select/6]).
@@ -527,6 +528,11 @@ emit_return_to(_Compiler, _Src) ->
 -spec emit_simd_op2(compiler(), Type::integer(), 
 		    DstVReg::vreg(), Src1::vreg(), Src2::vsrc()) -> ok.
 emit_simd_op2(_Compiler, _Type, _Dst, _Src1, _Src2) -> 
+    ?nif_stub().
+
+-spec emit_simd_arith_op1(compiler(), Type::integer(), 
+			  DstVReg::vreg(), Src1::vsrc()) -> ok.
+emit_simd_arith_op1(_Compiler, _Type, _Dst, _Src1) -> 
     ?nif_stub().
 
 -spec emit_simd_arith_op2(compiler(), Type::integer(), 
